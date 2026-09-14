@@ -1,6 +1,7 @@
 import { extension_settings } from '../../../../extensions.js';
+import { getTokenCountAsync } from '../../../../tokenizers.js';
 
-function renderSnapshotModal(mesId, message) {
+async function renderSnapshotModal(mesId, message) {
     const { Popup } = SillyTavern.getContext();
     const snapshot = message.extra.stateTrackerSnapshot;
     
@@ -20,9 +21,21 @@ function renderSnapshotModal(mesId, message) {
         formatted = "Error parsing snapshot data.";
     }
 
+    let tokenCount = 0;
+    try {
+        tokenCount = await getTokenCountAsync(formatted);
+    } catch (err) {
+        tokenCount = Math.ceil(formatted.length / 4);
+    }
+
     const html = `
         <div style="text-align: left; font-size: 0.9em; margin-top: 10px;">
-            <div style="margin-bottom: 10px; color: #aaa;">This is the exact logical state frozen in time at this specific message turn.</div>
+            <div style="margin-bottom: 10px; color: #aaa; display: flex; justify-content: space-between; align-items: center;">
+                <span>This is the exact logical state frozen in time at this specific message turn.</span>
+                <span style="background: rgba(0, 150, 136, 0.25); padding: 4px 8px; border-radius: 6px; font-weight: bold; border: 1px solid rgba(0, 150, 136, 0.5);" title="Approximate token consumption of this metadata.">
+                    <i class="fa-solid fa-coins"></i> ~${tokenCount} tokens
+                </span>
+            </div>
             <pre style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; max-height: 50vh; overflow-y: auto; white-space: pre-wrap; font-family: monospace;">${formatted}</pre>
         </div>
     `;
