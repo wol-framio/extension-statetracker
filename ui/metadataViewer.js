@@ -6,6 +6,7 @@ function renderSnapshotModal(mesId, message) {
     
     // Format JSON safely and filter out internal config/CSS
     let cleanSnapshot = {};
+    let formatted = "";
     try {
         if (snapshot && snapshot.groups) {
             snapshot.groups.forEach(group => {
