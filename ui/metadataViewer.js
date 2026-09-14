@@ -4,10 +4,17 @@ function renderSnapshotModal(mesId, message) {
     const { Popup } = SillyTavern.getContext();
     const snapshot = message.extra.stateTrackerSnapshot;
     
-    // Format JSON safely
-    let formatted = "";
+    // Format JSON safely and filter out internal config/CSS
+    let cleanSnapshot = {};
     try {
-        formatted = JSON.stringify(snapshot, null, 2);
+        if (snapshot && snapshot.groups) {
+            snapshot.groups.forEach(group => {
+                cleanSnapshot[group.name] = group.variables;
+            });
+        } else {
+            cleanSnapshot = snapshot;
+        }
+        formatted = JSON.stringify(cleanSnapshot, null, 2);
     } catch (e) {
         formatted = "Error parsing snapshot data.";
     }
