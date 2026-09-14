@@ -18,8 +18,7 @@ function renderSnapshotModal(mesId, message) {
             <pre style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; max-height: 50vh; overflow-y: auto; white-space: pre-wrap; font-family: monospace;">${formatted}</pre>
         </div>
     `;
-    
-    Popup.show.textModal(`State Snapshot (Turn ${mesId})`, html);
+    Popup.show.text(`State Snapshot (Turn ${mesId})`, html);
 }
 
 export function initMetadataViewer() {
