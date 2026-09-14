@@ -131,6 +131,12 @@ jQuery(() => {
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     eventSource.on(event_types.CHAT_CHANGED, updateHUD);
+
+    // Import and register new persistence hooks dynamically to avoid breaking existing imports at the top
+    import('./core/persistenceManager.js').then(module => {
+        if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, module.onMessageDeleted);
+        if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, module.onMessageSwiped);
+    }).catch(err => console.error("Failed to load persistenceManager:", err));
 }
 );
 

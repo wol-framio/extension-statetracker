@@ -1,5 +1,8 @@
 import { getCharacterData, findDatabaseKey, saveAndUpdateHUD } from './stateManager.js';
-import { extension_settings } from '../../../../extensions.js';export function buildStatePrompt() {
+import { extension_settings } from '../../../../extensions.js';
+import { snapshotStateToMessage } from './persistenceManager.js';
+
+export function buildStatePrompt() {
     const data = getCharacterData();
     if (!data || !data.groups || data.groups.length === 0) return '';
 
@@ -130,18 +133,25 @@ export async function onMessageReceived(messageId) {
                         c.group.variables[c.key] = c.value;
                     });
                     saveAndUpdateHUD();
+                    await snapshotStateToMessage(messageId);
                     toastr.success(`State updated successfully.`, "State Tracker");
                     if (saveChat) await saveChat();
                     $(`#${panelId}`).fadeOut(200, function() { $(this).remove(); });
                 });
 
-                $(`#btn-rej-${messageId}`).on('click', function() {
+                $(`#btn-rej-${messageId}`).on('click', async function() {
+                    await snapshotStateToMessage(messageId);
                     toastr.warning(`State updates rejected.`, "State Tracker");
                     $(`#${panelId}`).fadeOut(200, function() { $(this).remove(); });
                 });
             } else {
+                await snapshotStateToMessage(messageId);
                 if (saveChat) await saveChat();
             }
+        } else {
+            await snapshotStateToMessage(messageId);
         }
+    } else {
+        await snapshotStateToMessage(messageId);
     }
 }
