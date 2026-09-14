@@ -137,6 +137,10 @@ jQuery(() => {
         if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, module.onMessageDeleted);
         if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, module.onMessageSwiped);
     }).catch(err => console.error("Failed to load persistenceManager:", err));
+
+    import('./ui/metadataViewer.js').then(module => {
+        module.initMetadataViewer();
+    }).catch(err => console.error("Failed to load metadataViewer:", err));
 }
 );
 
