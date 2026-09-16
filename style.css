@@ -1,0 +1,60 @@
+/* State Tracker Core Styles */
+.st-tab-container { display: flex; border-bottom: 1px solid var(--SmartThemeBorderColor); margin-bottom: 10px; }
+.st-tab { flex: 1; text-align: center; padding: 8px; cursor: pointer; opacity: 0.7; font-weight: bold; transition: all 0.2s; border-bottom: 2px solid transparent; }
+.st-tab.active { opacity: 1; border-bottom: 2px solid #00aaff; }
+.st-tab-content { display: none; flex-direction: column; gap: 8px; }
+.st-tab-content.active { display: flex; }
+
+.st-group-card { border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; margin-bottom: 8px; background: rgba(0,0,0,0.15); overflow: hidden; }
+.st-group-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: rgba(255,255,255,0.05); cursor: pointer; user-select: none; flex-wrap: wrap; gap: 8px; }
+.st-group-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 120px; }
+.st-group-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.st-group-content { padding: 8px 10px; }
+
+.st-var-row { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px; margin-bottom: 12px; }
+.st-var-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.st-var-body { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.st-var-key-input { width: 100%; font-family: monospace; font-size: 0.9em; color: var(--SmartThemeQuoteColor); background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 4px 8px; }
+.st-var-val-input { flex: 1; padding: 6px; background: #1f1f1f !important; color: #fff !important; border: 1px solid #444 !important; border-radius: 4px; font-size: 0.95em; min-width: 100px; }
+
+.st-visual-panel { display: none; flex-direction: column; gap: 6px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 6px; margin-top: 4px; }
+.st-visual-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.st-input-sm { flex: 1; padding: 4px; font-size: 0.85em; background: #222; border: 1px solid #555; border-radius: 4px; min-width: 100px; }
+
+.st-icon-btn { min-width: auto; padding: 4px 8px; margin: 0; background: transparent; border: 1px solid rgba(255,255,255,0.2); cursor: pointer; border-radius: 4px; color: white; transition: 0.2s; }
+.st-icon-btn:hover { background: rgba(255,255,255,0.1); }
+.st-icon-btn.danger { color: #ff5555; border: none; }
+.st-icon-btn.success { background: #28a745 !important; border: none; }
+
+/* HUD Styles */
+.st-hud-container { display: flex; flex-direction: column; gap: 4px; width: 100%; align-items: center; margin-top: 8px; }
+.st-hud-bar-wrapper { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; margin-bottom: 4px; }
+.st-hud-text { color: white; font-size: 10px; font-weight: bold; text-shadow: 1px 1px 2px black, -1px -1px 2px black; text-align: center; width: 100%; }
+.st-hud-label { color: white; font-size: 10px; font-weight: bold; text-shadow: 1px 1px 2px black; text-align: center; width: 100%; line-height: 1.1; word-wrap: break-word; }
+
+.st-hud-shape-container { position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+.st-hud-shape-container.st-hud-circle { width: 100%; aspect-ratio: 1/1; border-radius: 50%; border: 2px solid; }
+.st-hud-shape-container.st-hud-bar { width: 100%; height: 12px; border: 1px solid; }
+
+.st-hud-fill { position: absolute; transition: width 0.3s, height 0.3s; }
+.st-hud-inside-wrapper { z-index: 1; display: none; gap: 2px; align-items: center; }
+.st-hud-label-inside { font-size: 9px; color: white; text-shadow: 1px 1px 1px black; }
+
+/* Additional Popup Variables */
+.st-var-key-wrapper { flex: 1; position: relative; min-width: 100px; }
+.st-var-inst-input { flex: 1; padding: 4px 8px; background: transparent !important; color: #aaa !important; border: 1px dashed #555 !important; border-radius: 4px; font-size: 0.85em; min-width: 150px; }
+
+/* Standard Text Buttons */
+.st-text-btn { padding: 6px 12px; margin: 0; font-size: 0.9em; font-weight: bold; border-radius: 4px; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: all 0.2s ease-in-out; border: 1px solid transparent; color: white; }
+.st-text-btn:hover { filter: brightness(1.2); box-shadow: 0 0 5px rgba(255,255,255,0.2); }
+.st-text-btn:active { transform: scale(0.98); }
+
+/* Color Themes for Text Buttons */
+.st-btn-primary { background-color: #0066cc; border: 1px solid #0055aa; text-shadow: 1px 1px 1px rgba(0,0,0,0.5); }
+.st-btn-secondary { background-color: #444444; border: 1px solid #555555; }
+.st-btn-danger { background-color: #aa0000; border: 1px solid #880000; }
+.st-btn-ghost { background-color: rgba(255,255,255,0.1); border: 1px dashed rgba(255,255,255,0.3); color: #dddddd; }
+.st-btn-ghost:hover { background-color: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.5); color: #ffffff; }
+
+/* Existing icon buttons hover improvement */
+.st-icon-btn:active { transform: scale(0.95); }

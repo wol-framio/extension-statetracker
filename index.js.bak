@@ -1,0 +1,1021 @@
+import { saveSettingsDebounced } from '../../../../script.js';
+import { extension_settings } from '../../../extensions.js';
+
+const STYLE_ID = 'state-tracker-styles';
+
+// Initialize default settings for State Tracker
+if (!extension_settings.stateTracker) {
+    extension_settings.stateTracker = {
+        enabled: true,
+        characters: {}, // Keyed by character avatar
+        presets: {}     // Keyed by preset name
+    };
+}
+
+// Ensure presets structure exists
+if (!extension_settings.stateTracker.presets) {
+    extension_settings.stateTracker.presets = {};
+}
+
+// Add a default template to the presets if empty
+if (Object.keys(extension_settings.stateTracker.presets).length === 0) {
+    extension_settings.stateTracker.presets["Default RPG Roleplay"] = [
+        {
+            name: "General",
+            hidden: false,
+            collapsed: false,
+            variables: {
+                "location_world": "Earth",
+                "location_region": "Tokyo, Japan (Setagaya)",
+                "location_room": "Bedroom",
+                "chronos_date": "10/13/2022",
+                "chronos_day": "Friday",
+                "chronos_time": "23:55",
+                "chronos_weather": "Clear night"
+            }
+        },
+        {
+            name: "Apariencia y Posición",
+            hidden: false,
+            collapsed: false,
+            variables: {
+                "{{char}}_age": "29",
+                "{{user}}_age": "27",
+                "{{char}}_outfit": "Underwear",
+                "{{user}}_outfit": "Underwear",
+                "{{char}}_position": "Lying on bed",
+                "{{user}}_position": "Standing near bed",
+                "{{char}}_appearance": "Blushing slightly",
+                "{{user}}_appearance": "Sweating"
+            }
+        },
+        {
+            name: "Inventario y Dinero",
+            hidden: false,
+            collapsed: false,
+            variables: {
+                "{{char}}_money": "100",
+                "{{user}}_money": "50",
+                "env_objects": "King bed, white sheets, night lamp",
+                "env_characters": "No secondary characters"
+            }
+        }
+    ];
+}
+
+// Get current character's avatar filename
+function getCharacterAvatar() {
+    const context = SillyTavern.getContext();
+    if (context.characterId !== undefined && context.characters && context.characters[context.characterId]) {
+        return context.characters[context.characterId].avatar;
+    }
+    return null;
+}
+
+// Get current character's name
+function getCharacterName() {
+    const context = SillyTavern.getContext();
+    if (context.characterId !== undefined && context.characters && context.characters[context.characterId]) {
+        return context.characters[context.characterId].name;
+    }
+    return 'Character';
+}
+
+// Get or initialize variables dictionary for current character
+function getCharacterData() {
+    const avatar = getCharacterAvatar();
+    if (!avatar) return { groups: [] };
+
+    if (!extension_settings.stateTracker.characters[avatar]) {
+        // Clone from default preset layout if available
+        const defaultPresetName = "Default RPG Roleplay";
+        if (extension_settings.stateTracker.presets[defaultPresetName]) {
+            // Perform deep copy of the default preset
+            extension_settings.stateTracker.characters[avatar] = {
+                groups: JSON.parse(JSON.stringify(extension_settings.stateTracker.presets[defaultPresetName]))
+            };
+        } else {
+            // Fallback manual initialization
+            extension_settings.stateTracker.characters[avatar] = {
+                groups: [
+                    {
+                        name: "General",
+                        hidden: false,
+                        collapsed: false,
+                        variables: {
+                            "location_world": "Earth",
+                            "location_room": "Bedroom"
+                        }
+                    }
+                ]
+            };
+        }
+    } else {
+        // Migrate old flat structure to groups format if needed
+        const rawData = extension_settings.stateTracker.characters[avatar];
+        if (!rawData.groups) {
+            const groups = [{
+                name: "General",
+                hidden: false,
+                collapsed: false,
+                variables: {}
+            }];
+            Object.entries(rawData).forEach(([k, v]) => {
+                let key = k.replace(/jane/gi, '{{char}}').replace(/yasuo/gi, '{{user}}');
+                groups[0].variables[key] = v;
+            });
+            extension_settings.stateTracker.characters[avatar] = { groups };
+            saveAndUpdateHUD();
+        }
+    }
+    return extension_settings.stateTracker.characters[avatar];
+}
+
+// Resolve the LLM-reported key to the database key containing placeholders
+function findDatabaseKey(llmKey, groups) {
+    const context = SillyTavern.getContext();
+    const charName = (context.characterId !== undefined ? context.characters[context.characterId].name : 'Jane').toLowerCase();
+    const userName = (context.userName || 'Yasuo').toLowerCase();
+
+    for (let group of groups) {
+        for (let key of Object.keys(group.variables)) {
+            const compareKey = key.replace(/\{\{char\}\}/gi, charName).replace(/\{\{user\}\}/gi, userName).toLowerCase().replace(/\s+/g, '_');
+            if (compareKey === llmKey.toLowerCase().replace(/\s+/g, '_')) {
+                return { group, key };
+            }
+        }
+    }
+    return null;
+}
+
+// Build compact state prompt for LLM injection
+function buildStatePrompt() {
+    const data = getCharacterData();
+    if (!data || !data.groups || data.groups.length === 0) return '';
+
+    const context = SillyTavern.getContext();
+    const charName = context.characterId !== undefined ? context.characters[context.characterId].name : 'Jane';
+    const userName = context.userName || 'Yasuo';
+
+    let prompt = `\n\n[CURRENT STATE & ENVIRONMENT VARIABLES]\n`;
+    let hasVars = false;
+
+    data.groups.forEach(group => {
+        if (group.hidden) return; // Skip hidden groups
+
+        const keys = Object.keys(group.variables);
+        if (keys.length > 0) {
+            hasVars = true;
+            keys.forEach(key => {
+                const resolvedKey = key.replace(/\{\{char\}\}/gi, charName).replace(/\{\{user\}\}/gi, userName);
+                let instructionStr = (group.instructions && group.instructions[key]) ? ` [Constraint: ${group.instructions[key]}]` : '';
+                prompt += `- ${resolvedKey}: ${group.variables[key]}${instructionStr}\n`;
+            });
+        }
+    });
+
+    if (!hasVars) return '';
+
+    prompt += `\nTo update any variable when the scene, time, clothes, positions, money, or state changes, you MUST append a tag at the very end of your response:\n`;
+    prompt += `[UPDATE_STATE: key_name=value | another_key=value2]\n`;
+    prompt += `Example: [UPDATE_STATE: location_room=Kitchen | chronos_time=08:00 | {{char}}_position=Standing]. Update only the keys that changed. Unchanged keys preserve their values.\n`;
+
+    return prompt;
+}
+
+// Hook for text completion
+function onGenerateBeforeCombinePrompts(data) {
+    if (!extension_settings.stateTracker.enabled) return;
+    const prompt = buildStatePrompt();
+    if (prompt) data.main = data.main + prompt;
+}
+
+// Hook for chat completion
+function onChatCompletionPromptReady(eventData) {
+    if (!extension_settings.stateTracker.enabled) return;
+    const prompt = buildStatePrompt();
+    if (!prompt) return;
+
+    let systemMessage = eventData.chat.find(msg => msg.role === 'system');
+    if (systemMessage) {
+        systemMessage.content = systemMessage.content + prompt;
+    } else {
+        eventData.chat.unshift({ role: 'system', content: prompt });
+    }
+}
+
+// Intercept and parse incoming LLM messages for state updates
+async function onMessageReceived(messageId) {
+    if (!extension_settings.stateTracker.enabled) return;
+
+    const context = SillyTavern.getContext();
+    const chat = context.chat;
+    if (!chat || !chat[messageId]) return;
+
+    const message = chat[messageId];
+    if (message.is_user) return;
+
+    const text = message.mes;
+    const stateRegex = /\[UPDATE_STATE:\s*([^\]]+)\]/i;
+    const match = stateRegex.exec(text);
+
+    if (match) {
+        const data = getCharacterData();
+        const { Popup, updateMessageBlock, saveChat } = SillyTavern.getContext();
+        
+        if (data && data.groups) {
+            const commandString = match[1];
+            const pairs = commandString.split('|');
+            let proposedChanges = [];
+
+            pairs.forEach(pair => {
+                const parts = pair.split('=');
+                if (parts.length === 2) {
+                    const llmKey = parts[0].trim().toLowerCase().replace(/\s+/g, '_');
+                    const value = parts[1].trim();
+
+                    const matchKey = findDatabaseKey(llmKey, data.groups);
+                    if (matchKey) {
+                        proposedChanges.push({ group: matchKey.group, key: matchKey.key, value: value });
+                    } else {
+                        // Key not found, add it to first active group
+                        const activeGroup = data.groups.find(g => !g.hidden) || data.groups[0];
+                        if (activeGroup) {
+                            proposedChanges.push({ group: activeGroup, key: llmKey, value: value });
+                        }
+                    }
+                }
+            });
+
+            // Strip the tag from the message IMMEDIATELY to keep chat clean
+            const cleanText = text.replace(/\[UPDATE_STATE:\s*[^\]]+\]/gi, '').trim();
+            message.mes = cleanText;
+            if (updateMessageBlock) updateMessageBlock(Number(messageId), message);
+
+            let accepted = false;
+            if (proposedChanges.length > 0) {
+                let changeLog = proposedChanges.map(c => `- <b>${c.key}</b>: ${c.value}`).join('<br>');
+                const confirm = await Popup.show.confirm(`The LLM wants to update the following state variables:<br><br>${changeLog}<br><br>Do you accept these changes?`);
+                
+                if (confirm) {
+                    proposedChanges.forEach(c => {
+                        c.group.variables[c.key] = c.value;
+                    });
+                    saveAndUpdateHUD();
+                    toastr.success(`State updated successfully.`, "State Tracker");
+                    accepted = true;
+                } else {
+                    toastr.warning(`State updates rejected.`, "State Tracker");
+                }
+            }
+
+            if (saveChat) await saveChat();
+        }
+    }
+}
+
+// HTML generator for variables list structured inside accordions (groups)
+function buildPopupContentHtml(data) {
+    let html = '';
+
+    data.groups.forEach((group, gIndex) => {
+        const arrowClass = group.collapsed ? 'fa-chevron-right' : 'fa-chevron-down';
+        const displayStyle = group.collapsed ? 'none' : 'block';
+        const groupLabelColor = group.hidden ? 'opacity: 0.5; text-decoration: line-through;' : '';
+
+        html += `
+            <div class="group-container" data-group-index="${gIndex}" style="border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; margin-bottom: 8px; background: rgba(0,0,0,0.15); overflow: hidden;">
+                <!-- Group Header / Accordion Trigger -->
+                <div class="group-header" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: rgba(255,255,255,0.05); cursor: pointer; user-select: none;">
+                    <div class="group-title-click" style="display: flex; align-items: center; gap: 8px; flex: 1; ${groupLabelColor}">
+                        <i class="fa-solid ${arrowClass} group-arrow" style="font-size: 0.85em;"></i>
+                        <strong>${group.name}</strong>
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px; align-items: center; cursor: default;">
+                        <label style="cursor: pointer; font-size: 0.85em; display: flex; align-items: center; gap: 4px;" title="Include variables of this group in LLM prompt context">
+                            <input type="checkbox" class="group-ctx-toggle" data-group-index="${gIndex}" ${!group.hidden ? 'checked' : ''}>
+                            In Context
+                        </label>
+                        <button class="menu_button del-group-btn" data-group-index="${gIndex}" style="min-width: auto; padding: 2px 6px; font-size: 0.8em; background: #900; margin: 0;">Del Group</button>
+                    </div>
+                </div>
+
+                <!-- Group Variables Content -->
+                <div class="group-content" style="display: ${displayStyle}; padding: 8px 10px;">
+        `;
+
+        const vars = group.variables;
+        const keys = Object.keys(vars);
+
+        keys.forEach(key => {
+            const instValue = (group.instructions && group.instructions[key]) ? group.instructions[key] : '';
+            html += `
+                <div class="popup_var_row" data-key="${key}" data-group-name="${group.name}" draggable="true" style="display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px; margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <i class="fa-solid fa-grip-vertical drag-handle" style="opacity: 0.5; margin-right: 8px; cursor: grab;" title="Drag to reorder"></i>
+                        <input type="text" class="text_input var_key_input" value="${key}" title="Edit Key Name" style="flex: 1; font-family: monospace; font-size: 0.95em; color: var(--SmartThemeQuoteColor); background: transparent; border: 1px dashed transparent; padding: 2px; cursor: text;">
+                        <button class="menu_button del_var_btn" style="min-width: auto; padding: 2px 8px; background: #900; margin: 0 0 0 8px; font-size: 0.85em;" title="Delete variable">Delete</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <input type="text" class="text_input var_val_input" value="${vars[key]}" placeholder="Value" title="Current Value" style="flex: 1; padding: 6px; background: #2a2a2a !important; color: #ffffff !important; border: 1px solid #555555 !important; border-radius: 4px; font-size: 0.9em; min-width: 50px;">
+                        
+                        <!-- Move Group Selector -->
+                        <select class="move_var_select" data-key="${key}" data-group-name="${group.name}" style="padding: 6px; font-size: 0.85em; background: #2a2a2a; color: white; border: 1px solid #555; border-radius: 4px; width: 90px;">
+                            ${data.groups.map(g => `<option value="${g.name}" ${g.name === group.name ? 'selected' : ''}>To: ${g.name}</option>`).join('')}
+                        </select>
+
+                        <button class="menu_button save_var_btn" style="min-width: auto; padding: 6px 12px; margin: 0; font-size: 0.95em; background: #006400 !important;" title="Save value">Save</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center; margin-top: 2px;">
+                        <input type="text" class="text_input var_inst_input" value="${instValue}" placeholder="Optional constraint/rule (e.g. use 24h format)" title="Variable Instruction" style="flex: 1; padding: 6px; background: #2a2a2a !important; color: #aaaaaa !important; border: 1px dashed #555555 !important; border-radius: 4px; font-size: 0.85em;">
+                        <button class="menu_button toggle_visuals_btn" style="min-width: auto; padding: 6px; margin: 0; font-size: 0.85em;" title="Visual Bar Settings"><i class="fa-solid fa-palette"></i></button>
+                    </div>
+                    <!-- Visual Config Panel -->
+                    ${(() => {
+                        const b = (group.bars && group.bars[key]) ? group.bars[key] : {};
+                        return `
+                        <div class="visual-config-panel" style="display: none; flex-direction: column; gap: 6px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 6px; margin-top: 4px;">
+                            <label style="font-size: 0.85em; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="vc_enabled" ${b.enabled ? 'checked' : ''}> Enable Visual Bar</label>
+                            
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" class="text_input vc_label" value="${b.label || ''}" placeholder="Display Name (e.g. Estamina)" style="flex:1; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                                <input type="number" class="text_input vc_max" value="${b.max || 100}" placeholder="Max" style="width: 60px; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                            </div>
+                            
+                            <div style="display:flex; gap:6px;">
+                                <select class="vc_shape" style="flex:1; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                                    <option value="square-bar" ${b.shape==='square-bar'?'selected':''}>Square Bar</option>
+                                    <option value="rounded-bar" ${b.shape==='rounded-bar'?'selected':''}>Rounded Bar</option>
+                                    <option value="circle" ${b.shape==='circle'?'selected':''}>Perfect Circle</option>
+                                </select>
+                                <select class="vc_valtype" style="flex:1; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                                    <option value="numeric" ${b.valueType==='numeric'?'selected':''}>Numeric (x/100)</option>
+                                    <option value="percentage" ${b.valueType==='percentage'?'selected':''}>Percentage (%)</option>
+                                </select>
+                            </div>
+                            
+                            <div style="display:flex; gap:6px;">
+                                <select class="vc_filldir" style="flex:1; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                                    <option value="left-to-right" ${b.fillDir==='left-to-right'?'selected':''}>Left to Right (Bar)</option>
+                                    <option value="bottom-to-top" ${b.fillDir==='bottom-to-top'?'selected':''}>Bottom to Top (Bar)</option>
+                                </select>
+                                <select class="vc_textpos" style="flex:1; padding:4px; font-size:0.85em; background: #222; border: 1px solid #555; border-radius: 4px;">
+                                    <option value="above" ${b.textPos==='above'?'selected':''}>Text Above</option>
+                                    <option value="below" ${b.textPos==='below'?'selected':''}>Text Below</option>
+                                    <option value="inside" ${b.textPos==='inside'?'selected':''}>Text Inside</option>
+                                    <option value="hidden" ${b.textPos==='hidden'?'selected':''}>Hidden Text</option>
+                                </select>
+                            </div>
+                            
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <label style="font-size:0.8em;">Fill:</label>
+                                <input type="color" class="vc_c_fill" value="${b.colorFill || '#00ff00'}" style="padding:0; border:none; width:24px; height:24px; background:transparent;">
+                                <label style="font-size:0.8em;">Bg:</label>
+                                <input type="color" class="vc_c_bg" value="${b.colorBg || '#333333'}" style="padding:0; border:none; width:24px; height:24px; background:transparent;">
+                                <label style="font-size:0.8em;">Border:</label>
+                                <input type="color" class="vc_c_border" value="${b.colorBorder || '#ffffff'}" style="padding:0; border:none; width:24px; height:24px; background:transparent;">
+                            </div>
+                        </div>
+                        `;
+                    })()}
+                </div>
+            `;
+        });
+
+        if (keys.length === 0) {
+            html += `<div style="opacity: 0.5; font-style: italic; font-size: 0.9em; padding: 5px 0;">No variables in this group.</div>`;
+        }
+
+        html += `
+                </div>
+            </div>
+        `;
+    });
+
+    return html;
+}
+
+// Show Quick Access popup for toggling/editing variables
+async function showQuickStatePopup() {
+    const avatar = getCharacterAvatar();
+    if (!avatar) {
+        toastr.info("Please select a character first.");
+        return;
+    }
+
+    const data = getCharacterData();
+    const { Popup, POPUP_TYPE } = SillyTavern.getContext();
+
+    let rootHtml = `<div style="display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow-y: auto; text-align: left; min-width: 280px; max-width: 100%;">`;
+    rootHtml += `<h3 style="margin-top: 0; margin-bottom: 5px;">State & Variables</h3>`;
+    rootHtml += `<p style="font-size: 0.85em; opacity: 0.8; margin-bottom: 10px;">Modify roleplay state variables or add custom keys that the LLM will track dynamically.</p>`;
+
+    rootHtml += `<div id="popup_accordion_container"></div>`;
+
+    // Creation forms (Variable & Group)
+    rootHtml += `<hr style="border: 0; border-top: 1px solid var(--SmartThemeBorderColor); margin: 12px 0;">`;
+    rootHtml += `
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+            <!-- Add Variable block -->
+            <div style="display: flex; flex-direction: column; gap: 5px; border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px;">
+                <strong style="font-size: 0.9em;">Add Variable</strong>
+                <input type="text" id="popup_new_var_key" class="text_input" placeholder="Variable name (e.g., {{char}}_outfit)" style="padding: 6px; background: #2a2a2a !important; color: #ffffff !important; border: 1px solid #555555 !important; border-radius: 4px; font-size: 0.9em;">
+                <input type="text" id="popup_new_var_val" class="text_input" placeholder="Value" style="padding: 6px; background: #2a2a2a !important; color: #ffffff !important; border: 1px solid #555555 !important; border-radius: 4px; font-size: 0.9em;">
+                <select id="popup_new_var_group" style="padding: 6px; background: #2a2a2a; color: white; border: 1px solid #555; border-radius: 4px; font-size: 0.9em;">
+                    ${data.groups.map(g => `<option value="${g.name}">${g.name}</option>`).join('')}
+                </select>
+                <button id="popup_add_var_btn" class="menu_button" style="padding: 8px; width: 100%; margin: 0; font-weight: bold;">Add Variable</button>
+            </div>
+            
+            <!-- Add Group block -->
+            <div style="display: flex; flex-direction: column; gap: 5px; border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px;">
+                <strong style="font-size: 0.9em;">Create Accordion Group</strong>
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="popup_new_group_name" class="text_input" placeholder="Group name (e.g. Apariencia)" style="flex: 1; padding: 6px; background: #2a2a2a !important; color: #ffffff !important; border: 1px solid #555555 !important; border-radius: 4px; font-size: 0.9em;">
+                    <button id="popup_add_group_btn" class="menu_button" style="padding: 6px 12px; margin: 0;">Create</button>
+                </div>
+            </div>
+
+            <!-- Templates & Presets Control Panel -->
+            <div style="display: flex; flex-direction: column; gap: 6px; border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px;">
+                <strong style="font-size: 0.9em;">Template Presets</strong>
+                
+                <button id="popup_save_preset_btn" class="menu_button" style="padding: 8px; margin: 0; font-size: 0.9em; font-weight: bold;">Save Current Layout as Preset</button>
+                
+                <div style="display: flex; gap: 6px; margin-top: 4px; align-items: center;">
+                    <select id="popup_load_preset_select" style="flex: 1; padding: 6px; background: #2a2a2a; color: white; border: 1px solid #555; border-radius: 4px; font-size: 0.85em; min-width: 50px;">
+                        ${Object.keys(extension_settings.stateTracker.presets).map(name => `<option value="${name}">Preset: ${name}</option>`).join('')}
+                    </select>
+                    <button id="popup_load_preset_btn" class="menu_button" style="padding: 6px 12px; margin: 0; font-size: 0.9em; font-weight: bold;">Load</button>
+                    <button id="popup_del_preset_btn" class="menu_button" style="padding: 6px 12px; margin: 0; font-size: 0.9em; font-weight: bold; background: #900;">Del</button>
+                </div>
+
+                <div style="display: flex; gap: 6px; margin-top: 4px; align-items: center;">
+                    <select id="popup_clone_char_select" style="flex: 1; padding: 6px; background: #2a2a2a; color: white; border: 1px solid #555; border-radius: 4px; font-size: 0.85em; min-width: 50px;">
+                        <option value="">-- Clone from Character --</option>
+                        ${Object.keys(extension_settings.stateTracker.characters)
+                            .filter(av => av !== avatar)
+                            .map(av => {
+                                const name = av.replace(/\.(png|jpg|webp)$/i, '');
+                                return `<option value="${av}">${name}</option>`;
+                            }).join('')}
+                    </select>
+                    <button id="popup_clone_char_btn" class="menu_button" style="padding: 6px 12px; margin: 0; font-size: 0.9em; font-weight: bold;">Clone</button>
+                </div>
+            </div>
+        </div>
+    `;
+    rootHtml += `</div>`;
+
+    const popupContent = $(rootHtml);
+
+    // Dynamic renderer function to rebuild the accordion container inside the active popup
+    function refreshAccordion() {
+        const container = popupContent.find('#popup_accordion_container');
+        container.html(buildPopupContentHtml(data));
+
+        // Re-inject options to group select dropdown
+        const groupSelect = popupContent.find('#popup_new_var_group');
+        groupSelect.empty();
+        data.groups.forEach(g => {
+            groupSelect.append(`<option value="${g.name}">${g.name}</option>`);
+        });
+
+        // Re-inject options to preset list
+        const presetSelect = popupContent.find('#popup_load_preset_select');
+        presetSelect.empty();
+        Object.keys(extension_settings.stateTracker.presets).forEach(name => {
+            presetSelect.append(`<option value="${name}">Preset: ${name}</option>`);
+        });
+    }
+
+    // Initialize list content
+    refreshAccordion();
+
+    // Drag and Drop mechanics for reordering variables
+    let draggedRow = null;
+
+    popupContent.on('dragstart', '.popup_var_row', function(e) {
+        // Ensure dragging starts from the handle
+        if (!$(e.target).hasClass('popup_var_row') && !$(e.target).closest('.drag-handle').length) {
+            e.preventDefault();
+            return;
+        }
+        draggedRow = this;
+        e.originalEvent.dataTransfer.effectAllowed = 'move';
+        $(this).css('opacity', '0.4');
+    });
+
+    popupContent.on('dragend', '.popup_var_row', function(e) {
+        $(this).css('opacity', '1');
+        draggedRow = null;
+    });
+
+    popupContent.on('dragover', '.popup_var_row', function(e) {
+        e.preventDefault();
+        e.originalEvent.dataTransfer.dropEffect = 'move';
+        return false;
+    });
+
+    popupContent.on('drop', '.popup_var_row', function(e) {
+        e.stopPropagation();
+        if (draggedRow && draggedRow !== this) {
+            const targetRow = this;
+            const groupName = $(this).data('group-name');
+            const draggedGroupName = $(draggedRow).data('group-name');
+            
+            if (groupName !== draggedGroupName) return false;
+
+            const container = $(this).parent();
+            const allRows = container.find('.popup_var_row').toArray();
+            const draggedIdx = allRows.indexOf(draggedRow);
+            const targetIdx = allRows.indexOf(targetRow);
+
+            if (draggedIdx < targetIdx) {
+                $(targetRow).after(draggedRow);
+            } else {
+                $(targetRow).before(draggedRow);
+            }
+
+            const group = data.groups.find(g => g.name === groupName);
+            if (group) {
+                const newVars = {};
+                const newInsts = {};
+                const newBars = {};
+                container.find('.popup_var_row').each(function() {
+                    const k = $(this).data('key');
+                    newVars[k] = group.variables[k];
+                    if (group.instructions && group.instructions[k]) {
+                        newInsts[k] = group.instructions[k];
+                    }
+                    if (group.bars && group.bars[k]) {
+                        newBars[k] = group.bars[k];
+                    }
+                });
+                group.variables = newVars;
+                group.instructions = newInsts;
+                group.bars = newBars;
+                saveAndUpdateHUD();
+            }
+        }
+        return false;
+    });
+
+    // Event Handler: Toggle Accordion (Collapse/Expand)
+    popupContent.on('click', '.group-title-click', function() {
+        const container = $(this).closest('.group-container');
+        const index = container.data('group-index');
+        const group = data.groups[index];
+        const content = container.find('.group-content');
+        const arrow = container.find('.group-arrow');
+
+        group.collapsed = !group.collapsed;
+        saveAndUpdateHUD();
+
+        content.slideToggle(200);
+        arrow.toggleClass('fa-chevron-down fa-chevron-right');
+    });
+
+    // Event Handler: Toggle In-Context (Active state)
+    popupContent.on('change', '.group-ctx-toggle', function() {
+        const index = $(this).data('group-index');
+        const group = data.groups[index];
+        group.hidden = !$(this).prop('checked');
+        saveAndUpdateHUD();
+        refreshAccordion();
+    });
+
+    // Event Handler: Delete Group
+    popupContent.on('click', '.del-group-btn', async function() {
+        const index = $(this).data('group-index');
+        const group = data.groups[index];
+        const confirm = await Popup.show.confirm(`Delete group "${group.name}" and all its variables?`);
+        if (confirm) {
+            data.groups.splice(index, 1);
+            saveAndUpdateHUD();
+            refreshAccordion();
+            toastr.success(`Group "${group.name}" deleted.`);
+        }
+    });
+
+    // Event Handler: Toggle Visuals Panel
+    popupContent.on('click', '.toggle_visuals_btn', function() {
+        $(this).closest('.popup_var_row').find('.visual-config-panel').slideToggle(200);
+    });
+
+    // Event Handler: Save Variable
+    popupContent.on('click', '.save_var_btn', function() {
+        const row = $(this).closest('.popup_var_row');
+        const oldKey = row.data('key');
+        let newKey = row.find('.var_key_input').val().trim();
+        const groupName = row.data('group-name');
+        const val = row.find('.var_val_input').val().trim();
+        const inst = row.find('.var_inst_input').val().trim();
+        
+        const vcEnabled = row.find('.vc_enabled').prop('checked');
+        const vcLabel = row.find('.vc_label').val().trim();
+        const vcMax = row.find('.vc_max').val();
+        const vcShape = row.find('.vc_shape').val();
+        const vcValType = row.find('.vc_valtype').val();
+        const vcFillDir = row.find('.vc_filldir').val();
+        const vcTextPos = row.find('.vc_textpos').val();
+        const vccFill = row.find('.vc_c_fill').val();
+        const vccBg = row.find('.vc_c_bg').val();
+        const vccBorder = row.find('.vc_c_border').val();
+
+        if (!newKey) newKey = oldKey; // Prevent empty keys
+
+        const group = data.groups.find(g => g.name === groupName);
+        if (group && group.variables[oldKey] !== undefined) {
+            
+            // Handle rename
+            if (newKey !== oldKey) {
+                // To preserve object order, we can't just delete and insert unless we want it at the end.
+                // It's acceptable to move it to the end when renaming, or we can reconstruct.
+                // The drag-drop handles visual order anyway.
+                delete group.variables[oldKey];
+                
+                if (group.instructions && group.instructions[oldKey]) {
+                    if (!group.instructions) group.instructions = {};
+                    group.instructions[newKey] = group.instructions[oldKey];
+                    delete group.instructions[oldKey];
+                }
+                
+                row.data('key', newKey);
+                row.find('.move_var_select').attr('data-key', newKey);
+            }
+
+            group.variables[newKey] = val;
+            if (!group.instructions) group.instructions = {};
+            if (inst) {
+                group.instructions[newKey] = inst;
+            } else {
+                delete group.instructions[newKey];
+            }
+            
+            if (!group.bars) group.bars = {};
+            group.bars[newKey] = {
+                enabled: vcEnabled,
+                label: vcLabel,
+                max: vcMax,
+                shape: vcShape,
+                valueType: vcValType,
+                fillDir: vcFillDir,
+                textPos: vcTextPos,
+                colorFill: vccFill,
+                colorBg: vccBg,
+                colorBorder: vccBorder
+            };
+            
+            saveAndUpdateHUD();
+            toastr.success(`Variable "${newKey}" saved!`);
+        }
+    });
+
+    // Event Handler: Move Variable
+    popupContent.on('change', '.move_var_select', function() {
+        const row = $(this).closest('.popup_var_row');
+        const key = row.data('key');
+        const oldGroupName = row.data('group-name');
+        const newGroupName = $(this).val();
+
+        if (oldGroupName === newGroupName) return;
+
+        const oldGroup = data.groups.find(g => g.name === oldGroupName);
+        const newGroup = data.groups.find(g => g.name === newGroupName);
+
+        if (oldGroup && newGroup) {
+            newGroup.variables[key] = oldGroup.variables[key];
+            delete oldGroup.variables[key];
+            
+            if (oldGroup.instructions && oldGroup.instructions[key]) {
+                if (!newGroup.instructions) newGroup.instructions = {};
+                newGroup.instructions[key] = oldGroup.instructions[key];
+                delete oldGroup.instructions[key];
+            }
+            
+            saveAndUpdateHUD();
+            refreshAccordion();
+            toastr.success(`Moved "${key}" to "${newGroupName}"`);
+        }
+    });
+
+    // Event Handler: Delete Variable
+    popupContent.on('click', '.del_var_btn', async function() {
+        const row = $(this).closest('.popup_var_row');
+        const key = row.data('key');
+        const groupName = row.data('group-name');
+
+        const confirm = await Popup.show.confirm(`Delete variable "${key}"?`);
+        if (confirm) {
+            const group = data.groups.find(g => g.name === groupName);
+            if (group) {
+                delete group.variables[key];
+                if (group.instructions) delete group.instructions[key];
+                if (group.bars) delete group.bars[key];
+                saveAndUpdateHUD();
+                refreshAccordion();
+                toastr.success(`Variable "${key}" deleted.`);
+            }
+        }
+    });
+
+    // Event Handler: Add Variable
+    popupContent.find('#popup_add_var_btn').on('click', function() {
+        const key = $('#popup_new_var_key').val().trim().toLowerCase().replace(/\s+/g, '_');
+        const val = $('#popup_new_var_val').val().trim();
+        const groupName = $('#popup_new_var_group').val();
+
+        if (!key || !val || !groupName) {
+            toastr.error("Key, Value, and Target Group are required.");
+            return;
+        }
+
+        const group = data.groups.find(g => g.name === groupName);
+        if (!group) return;
+
+        // Check duplicates across all groups
+        let exists = false;
+        data.groups.forEach(g => {
+            if (g.variables[key] !== undefined) exists = true;
+        });
+
+        if (exists) {
+            toastr.error(`Variable "${key}" already exists.`);
+            return;
+        }
+
+        group.variables[key] = val;
+        saveAndUpdateHUD();
+        toastr.success(`Variable "${key}" created in "${groupName}"!`);
+
+        $('#popup_new_var_key').val('');
+        $('#popup_new_var_val').val('');
+        refreshAccordion();
+    });
+
+    // Event Handler: Add Group
+    popupContent.find('#popup_add_group_btn').on('click', function() {
+        const name = $('#popup_new_group_name').val().trim();
+
+        if (!name) {
+            toastr.error("Group name is required.");
+            return;
+        }
+
+        if (data.groups.some(g => g.name.toLowerCase() === name.toLowerCase())) {
+            toastr.error(`Group "${name}" already exists.`);
+            return;
+        }
+
+        data.groups.push({
+            name: name,
+            hidden: false,
+            collapsed: false,
+            variables: {}
+        });
+
+        saveAndUpdateHUD();
+        toastr.success(`Group "${name}" created!`);
+        $('#popup_new_group_name').val('');
+        refreshAccordion();
+    });
+
+    // Event Handler: Save Current Layout as Preset
+    popupContent.find('#popup_save_preset_btn').on('click', async function() {
+        const presetName = await Popup.show.input("Save Preset Layout", "Enter a name for the new preset template:");
+        if (!presetName) return;
+
+        const name = presetName.trim();
+        if (extension_settings.stateTracker.presets[name]) {
+            const confirm = await Popup.show.confirm("Overwrite Preset", `A preset named "${name}" already exists. Overwrite?`);
+            if (!confirm) return;
+        }
+
+        // Deep copy of current layout groups
+        extension_settings.stateTracker.presets[name] = JSON.parse(JSON.stringify(data.groups));
+        saveAndUpdateHUD();
+        toastr.success(`Preset layout "${name}" successfully saved!`);
+        refreshAccordion();
+    });
+
+    // Event Handler: Load Preset
+    popupContent.find('#popup_load_preset_btn').on('click', async function() {
+        const name = $('#popup_load_preset_select').val();
+        if (!name) return;
+
+        const confirm = await Popup.show.confirm("Load Preset Template", `This will OVERWRITE the current character variables with the layout of the preset "${name}". Proceed?`);
+        if (confirm) {
+            data.groups = JSON.parse(JSON.stringify(extension_settings.stateTracker.presets[name]));
+            saveAndUpdateHUD();
+            refreshAccordion();
+            toastr.success(`Preset "${name}" loaded!`);
+        }
+    });
+
+    // Event Handler: Delete Preset
+    popupContent.find('#popup_del_preset_btn').on('click', async function() {
+        const name = $('#popup_load_preset_select').val();
+        if (!name) return;
+
+        if (name === "Default RPG Roleplay") {
+            toastr.error("Cannot delete the default system template.");
+            return;
+        }
+
+        const confirm = await Popup.show.confirm("Delete Preset Template", `Are you sure you want to delete the preset layout "${name}"?`);
+        if (confirm) {
+            delete extension_settings.stateTracker.presets[name];
+            saveAndUpdateHUD();
+            refreshAccordion();
+            toastr.success(`Preset "${name}" deleted.`);
+        }
+    });
+
+    // Event Handler: Clone from another Character
+    popupContent.find('#popup_clone_char_btn').on('click', async function() {
+        const targetAvatar = $('#popup_clone_char_select').val();
+        if (!targetAvatar) {
+            toastr.error("Please select a character to clone from.");
+            return;
+        }
+
+        const targetData = extension_settings.stateTracker.characters[targetAvatar];
+        if (!targetData || !targetData.groups) {
+            toastr.error("Target character does not have configured variables.");
+            return;
+        }
+
+        const charLabel = targetAvatar.replace(/\.(png|jpg|webp)$/i, '');
+        const confirm = await Popup.show.confirm("Clone Variables", `This will OVERWRITE all variables and groups of this card with the setup of "${charLabel}". Proceed?`);
+        if (confirm) {
+            data.groups = JSON.parse(JSON.stringify(targetData.groups));
+            saveAndUpdateHUD();
+            refreshAccordion();
+            toastr.success(`Successfully cloned variables from "${charLabel}"!`);
+        }
+    });
+
+    const popup = new Popup(popupContent, POPUP_TYPE.TEXT, null, { okButton: "Close" });
+    await popup.show();
+}
+
+// Render Settings Drawer
+function renderSettings() {
+    $('#state_tracker_enabled').prop('checked', extension_settings.stateTracker.enabled);
+}
+
+function setupUIHandlers() {
+    $('#state_tracker_enabled').off('change').on('change', function() {
+        extension_settings.stateTracker.enabled = $(this).prop('checked');
+        saveAndUpdateHUD();
+    });
+}
+
+// Initializer
+jQuery(() => {
+    // 1. Append settings drawer
+    const settingsContainer = $(document.getElementById('extensions_settings2') ?? document.getElementById('extensions_settings'));
+    if (settingsContainer.length > 0) {
+        const html = `
+            <div class="state_tracker_settings" style="margin-bottom: 20px;">
+                <div class="inline-drawer">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b>State & Variables Tracker</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content" style="display: none; padding: 10px;">
+                        <div style="margin-bottom: 10px; font-size: 0.95em; opacity: 0.9;">
+                            Allows creating and tracking custom key-value variables (such as location, outfits, physical positions, appearance, money, and time). The LLM can write updates dynamically.
+                        </div>
+                        <label for="state_tracker_enabled" class="checkbox_label" style="display: flex; align-items: center; cursor: pointer; font-weight: bold; margin-bottom: 15px;">
+                            <input type="checkbox" id="state_tracker_enabled" name="state_tracker_enabled" style="margin-right: 8px;">
+                            Enable State & Variables Tracking
+                        </label>
+                    </div>
+                </div>
+            </div>
+        `;
+        settingsContainer.append(html);
+    }
+
+    // 2. Append quick access option to the Hamburger Menu (three stacked lines)
+    const quickOption = $(`
+        <a id="option_state_tracker" style="cursor: pointer;">
+            <i class="fa-lg fa-solid fa-sliders"></i>
+            <span data-i18n="State Tracker">State Tracker</span>
+        </a>
+    `);
+    quickOption.on('click', function() {
+        $('#options').hide();
+        showQuickStatePopup();
+    });
+    $('#options .options-content').append(quickOption);
+
+    // Setup handlers and render
+    renderSettings();
+    setupUIHandlers();
+
+    // Register event listeners
+    const { eventSource, event_types } = SillyTavern.getContext();
+    eventSource.on(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, onGenerateBeforeCombinePrompts);
+    eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
+    eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+});
+
+// --- VISUAL BARS HUD SYSTEM ---
+
+function initHUD() {
+    if ($('#state-tracker-hud').length === 0) {
+        const hud = $('<div id="state-tracker-hud" style="position: fixed; top: 60px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none;"></div>');
+        $('body').append(hud);
+    }
+}
+
+function updateHUD() {
+    initHUD();
+    const hud = $('#state-tracker-hud');
+    hud.empty();
+    
+    if (!extension_settings.stateTracker.enabled) return;
+    
+    const data = getCharacterData();
+    if (!data || !data.groups) return;
+
+    data.groups.forEach(group => {
+        if (!group.bars) return;
+        
+        Object.keys(group.variables).forEach(key => {
+            const barConf = group.bars[key];
+            if (!barConf || !barConf.enabled) return;
+            
+            const rawVal = parseFloat(group.variables[key]) || 0;
+            const maxVal = parseFloat(barConf.max) || 100;
+            const percentage = Math.max(0, Math.min(100, (rawVal / maxVal) * 100));
+            
+            const labelText = barConf.label ? `${barConf.label}` : '';
+            const displayVal = barConf.valueType === 'percentage' ? `${Math.round(percentage)}%` : `${rawVal}/${maxVal}`;
+            
+            let barHtml = '';
+            
+            // Common text element
+            const textEl = `<div style="color: white; font-size: 12px; font-weight: bold; text-shadow: 1px 1px 2px black, -1px -1px 2px black;">${displayVal}</div>`;
+            const labelEl = `<div style="color: white; font-size: 12px; font-weight: bold; text-shadow: 1px 1px 2px black;">${labelText}</div>`;
+
+            if (barConf.shape === 'circle') {
+                const size = 60;
+                barHtml = `
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                        ${barConf.textPos === 'above' ? labelEl : ''}
+                        ${barConf.textPos === 'above' && barConf.textPos !== 'inside' ? textEl : ''}
+                        
+                        <div style="width: ${size}px; height: ${size}px; border-radius: 50%; background: conic-gradient(${barConf.colorFill} ${percentage}%, ${barConf.colorBg} ${percentage}%); border: 2px solid ${barConf.colorBorder}; display: flex; justify-content: center; align-items: center;">
+                            ${barConf.textPos === 'inside' ? textEl : ''}
+                        </div>
+                        
+                        ${barConf.textPos === 'below' ? labelEl : ''}
+                        ${barConf.textPos === 'below' && barConf.textPos !== 'inside' ? textEl : ''}
+                    </div>
+                `;
+            } else {
+                // square-bar or rounded-bar
+                const bRadius = barConf.shape === 'rounded-bar' ? '10px' : '0px';
+                const w = 150;
+                const h = 20;
+                
+                let fillStyle = '';
+                if (barConf.fillDir === 'bottom-to-top') {
+                    fillStyle = `width: 100%; height: ${percentage}%; bottom: 0; position: absolute; background: ${barConf.colorFill}; transition: height 0.3s;`;
+                } else {
+                    // left-to-right
+                    fillStyle = `height: 100%; width: ${percentage}%; left: 0; position: absolute; background: ${barConf.colorFill}; transition: width 0.3s;`;
+                }
+                
+                barHtml = `
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                        ${barConf.textPos === 'above' ? `<div style="display:flex; justify-content:space-between; width:${w}px;">${labelEl}${textEl}</div>` : ''}
+                        
+                        <div style="width: ${w}px; height: ${h}px; border-radius: ${bRadius}; background: ${barConf.colorBg}; border: 2px solid ${barConf.colorBorder}; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center;">
+                            <div style="${fillStyle}"></div>
+                            ${barConf.textPos === 'inside' ? `<div style="z-index: 1;">${labelText} ${textEl}</div>` : ''}
+                        </div>
+                        
+                        ${barConf.textPos === 'below' ? `<div style="display:flex; justify-content:space-between; width:${w}px;">${labelEl}${textEl}</div>` : ''}
+                    </div>
+                `;
+            }
+            
+            hud.append($(barHtml));
+        });
+    });
+}
+
+// Wrapped save
+import { saveSettingsDebounced } from '../../../../script.js';
+function saveAndUpdateHUD() {
+    saveSettingsDebounced();
+    updateHUD();
+}
+setTimeout(updateHUD, 2000); // Initial load
+
