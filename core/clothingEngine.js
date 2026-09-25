@@ -145,32 +145,25 @@ export function getClothingPrompt(chatData, charName, avatar) {
     const profile = getCharacterProfile(avatar);
     if (!profile) return '';
     
-    const lang = extension_settings.stateTracker?.lang?.prompt || 'en';
-    const isEn = lang === 'en';
-    
-    const equippedItems = chatData.clothing.equipped.map(id => profile.wardrobe.items[id]).filter(Boolean);
-    
-    let prompt = '';
-    
-    if (equippedItems.length === 0) {
-        prompt += isEn ? `[${charName}'s Clothing: Completely naked]\n` : `[Ropa de ${charName}: Completamente desnudo/a]\n`;
-    } else {
-        const itemNames = equippedItems.map(i => isEn ? (i.name_en || i.name) : i.name).join(', ');
-        prompt += isEn ? `[${charName}'s Clothing: ${itemNames}]\n` : `[Ropa de ${charName}: ${itemNames}]\n`;
-    }
-    
-    const exposed = getAnatomyState(chatData, profile, lang);
-    if (exposed.length > 0) {
-        prompt += isEn ? `[${charName}'s Anatomy Exposed: ${exposed.join(', ')}]\n` : `[Anatomía Expuesta de ${charName}: ${exposed.join(', ')}]\n`;
-    }
+    let prompt = `[RULE: ${charName} has a CLOTHING ITEMS system available identified by a snake_case ID; only these are allowed to be used to dress ${charName}. You CANNOT invent clothing that is NOT defined in the list. If in previous messages ${charName} explicitly takes off clothes or puts on an item of clothing, you must equip or unequip clothing IDs accordingly.]\n`;
     
     const availableItems = Object.keys(profile.wardrobe.items);
     if (availableItems.length > 0) {
         const invList = availableItems.join(', ');
-        prompt += isEn ? `[Available Wardrobe Items to Equip: ${invList}]\n` : `[Prendas Disponibles para Equipar: ${invList}]\n`;
+        prompt += `[Full list of CLOTHING ITEMS available in ${charName}'s wardrobe to wear during roleplay: ${invList}]\n`;
     }
     
-
+    const equippedIds = chatData.clothing.equipped.filter(id => profile.wardrobe.items[id]);
+    if (equippedIds.length === 0) {
+        prompt += `[${charName}'s CLOTHING ITEMS currently EQUIPPED: none]\n`;
+    } else {
+        prompt += `[${charName}'s CLOTHING ITEMS currently EQUIPPED: ${equippedIds.join(', ')}]\n`;
+    }
+    
+    const exposed = getAnatomyState(chatData, profile, 'en');
+    if (exposed.length > 0) {
+        prompt += `[${charName}'s anatomy that is currently exposed and without CLOTHING ITEMS: ${exposed.join(', ')}]\n`;
+    }
     
     return prompt.trim();
 }
