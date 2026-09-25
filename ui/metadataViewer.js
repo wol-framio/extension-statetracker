@@ -6,48 +6,281 @@ import { calculateAges, getActiveEvents } from '../core/calendarEngine.js';
 import { getBiologyPrompt } from '../core/biologyEngine.js';
 import { getClothingPrompt, getCharacterProfile, initClothingState } from '../core/clothingEngine.js';
 import { getCharacterAvatar } from '../core/stateManager.js';
+import { ConnectionManagerRequestService } from '../../../shared.js';
+import { executeTinyLLM } from '../core/tinyLLMEngine.js';
+import { generateRaw } from '../../../../../script.js';
 async function renderSnapshotModal(mesId, message) {
-    const { Popup } = SillyTavern.getContext();
+    const context = SillyTavern.getContext();
+    const { Popup } = context;
     const snapshot = message.extra.stateTrackerSnapshot;
     
-    // Format JSON safely and filter out internal config/CSS
+    if (!extension_settings.stateTracker.tinyLLM) {
+        extension_settings.stateTracker.tinyLLM = {
+            sysprompt: "Eres un sistema de rastreo de estado oculto. Analiza la conversación y el estado actual. Extrae las nuevas variables y cambios que ocurran lógicamente en base a las acciones de los personajes. Responde ÚNICAMENTE con un JSON puro con este formato: {\"StateTracker\": {\"nombre_variable\": \"nuevo_valor\"}}",
+            ctxCount: 1,
+            profile: 'main_api',
+            maxTokens: 200,
+            autoUpdate: false
+        };
+    }
+    const tinyCfg = extension_settings.stateTracker.tinyLLM;
+    
     let cleanSnapshot = {};
     let formatted = "";
     try {
         if (snapshot && snapshot.groups) {
-            snapshot.groups.forEach(group => {
-                cleanSnapshot[group.name] = group.variables;
-            });
+            snapshot.groups.forEach(group => { cleanSnapshot[group.name] = group.variables; });
             if (snapshot.time) cleanSnapshot.time = snapshot.time;
             if (snapshot.weather) cleanSnapshot.weather = snapshot.weather;
             if (snapshot.calendar) cleanSnapshot.calendar = snapshot.calendar;
-        } else {
-            cleanSnapshot = snapshot;
-        }
+            if (snapshot.clothing) cleanSnapshot.clothing = snapshot.clothing;
+            if (snapshot.biology) cleanSnapshot.biology = snapshot.biology;
+        } else { cleanSnapshot = snapshot; }
         formatted = JSON.stringify(cleanSnapshot, null, 2);
-    } catch (e) {
-        formatted = "Error parsing snapshot data.";
-    }
+    } catch (e) { formatted = "Error parsing snapshot data."; }
 
-    let tokenCount = 0;
-    try {
-        tokenCount = await getTokenCountAsync(formatted);
-    } catch (err) {
-        tokenCount = Math.ceil(formatted.length / 4);
+    let profilesHtml = '<option value="main_api">-- Main API (La que usas actualmente) --</option>';
+    const domSelect = document.getElementById('connection_profiles');
+    if (domSelect && domSelect.options) {
+        for (let i = 0; i < domSelect.options.length; i++) {
+            const opt = domSelect.options[i];
+            const sel = (tinyCfg.profile === opt.value) ? 'selected' : '';
+            profilesHtml += `<option value="${opt.value}" ${sel}>${opt.text}</option>`;
+        }
     }
 
     const html = `
-        <div style="text-align: left; font-size: 0.9em; margin-top: 10px;">
-            <div style="margin-bottom: 10px; color: #aaa; display: flex; justify-content: space-between; align-items: center;">
-                <span>This is the exact logical state frozen in time at this specific message turn.</span>
-                <span style="background: rgba(0, 150, 136, 0.25); padding: 4px 8px; border-radius: 6px; font-weight: bold; border: 1px solid rgba(0, 150, 136, 0.5);" title="Approximate token consumption of this metadata.">
-                    <i class="fa-solid fa-coins"></i> ~${tokenCount} tokens
-                </span>
+        <div style="text-align: left; font-size: 0.9em; margin-top: 10px; max-height: 75vh; overflow-y: auto; overflow-x: hidden; padding-right: 10px;">
+            <div style="background: rgba(0, 50, 100, 0.4); border: 1px solid rgba(0, 150, 255, 0.5); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <h3 style="margin: 0 0 10px 0; color: #aaddff; border-bottom: 1px solid rgba(0,150,255,0.3); padding-bottom: 5px;"><i class="fa-solid fa-microchip"></i> Gestor de Estado (Tiny LLM)</h3>
+                
+                <!-- TOGGLE MAESTRO -->
+                <div style="background: rgba(0,0,0,0.6); padding: 12px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #555;">
+                    <label style="cursor: pointer; display: flex; align-items: center; color: white;">
+                        <input type="checkbox" id="st_tiny_master_enabled" style="margin-right: 10px; transform: scale(1.3);" ${tinyCfg.enabled !== false ? 'checked' : ''}>
+                        <div style="display:flex; flex-direction:column;">
+                            <strong style="font-size: 1.1em; color: #55ff55;">Habilitar Sistema Tiny LLM</strong>
+                            <span style="font-size: 0.75em; color: #aaa; margin-top:4px;">Si desactivas esto, el LLM Principal volverá a hacer todo el trabajo (comportamiento original clásico).</span>
+                        </div>
+                    </label>
+                </div>
+                
+                <div id="st_tiny_settings_container" style="display: ${tinyCfg.enabled !== false ? 'block' : 'none'};">
+                    <p style="font-size: 0.85em; opacity: 0.9; margin-bottom: 15px;">Este panel te permite usar una API diferente o un LLM más barato para leer el mensaje de este turno y actualizar variables de estado sin gastar tokens de tu LLM principal.</p>
+
+                    <!-- APILADO VERTICAL ESTRICTO PARA MÓVILES -->
+                    
+                    <!-- 1. Perfil API -->
+                    <div style="background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #00aaff; margin-bottom: 15px; width: 100%;">
+                        <label style="font-weight: bold; color: #fff; display:block; margin-bottom: 4px;">1. ¿Qué API o modelo usará este sistema?</label>
+                        <p style="font-size: 0.75em; color: #aaa; margin: 0 0 8px 0;">Elige uno de tus perfiles guardados (ej. tu OpenRouter barato). Si eliges 'Main API', usará el LLM principal.</p>
+                        <select id="st_tiny_profile" class="text_input" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.7)!important; color: white!important;">${profilesHtml}</select>
+                    </div>
+                    
+                    <!-- 2. Max Tokens -->
+                    <div style="background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #00aaff; margin-bottom: 15px; width: 100%;">
+                        <label style="font-weight: bold; color: #fff; display:block; margin-bottom: 4px;">2. Max de Tokens (Salida)</label>
+                        <p style="font-size: 0.75em; color: #aaa; margin: 0 0 8px 0;">Límite de palabras generadas por el Tiny LLM. (Ponlo en 200 para que responda rápido y corte el exceso).</p>
+                        <input type="number" id="st_tiny_maxtokens" class="text_input" value="${tinyCfg.maxTokens || 200}" min="10" max="1000" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.7)!important; color: white!important;">
+                    </div>
+
+                    <!-- 3. Mensajes Contexto -->
+                    <div style="background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #00aaff; margin-bottom: 15px; width: 100%;">
+                        <label style="font-weight: bold; color: #fff; display:block; margin-bottom: 4px;">3. Mensajes de Contexto</label>
+                        <p style="font-size: 0.75em; color: #aaa; margin: 0 0 8px 0;">¿Cuántos mensajes lee hacia atrás? Poner "1": Lee este turno. "2": Este turno y tu repuesta anterior.</p>
+                        <input type="number" id="st_tiny_ctx" class="text_input" value="${tinyCfg.ctxCount}" min="1" max="10" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.7)!important; color: white!important;">
+                    </div>
+                    
+                    <!-- 4. System Prompt -->
+                    <div style="background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #00aaff; margin-bottom: 15px; width: 100%;">
+                        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <label style="font-weight: bold; color: #fff;">4. Instrucciones del Tiny LLM (System Prompt)</label>
+                            <span id="st_tiny_save_status" style="color: #55ff55; font-size: 0.8em; display: none; font-weight: bold;">¡Guardado! ✓</span>
+                        </div>
+                        <p style="font-size: 0.75em; color: #aaa; margin: 0 0 8px 0;">Dile al Tiny LLM cómo debe extraer la ropa y variables. Esto se autoguarda al teclear.</p>
+                        <textarea id="st_tiny_sysprompt" class="text_input" style="width: 100%; height: 90px; padding: 8px; background: rgba(0,0,0,0.7)!important; color: white!important;">${tinyCfg.sysprompt}</textarea>
+                        
+                        <!-- AVANZADO: Prompts Estructurales -->
+                        <div style="margin-top: 10px;">
+                            <label style="font-weight: bold; font-size: 0.85em; cursor: pointer; color: #aaa;" id="st_tiny_adv_toggle">
+                                <i class="fa-solid fa-caret-right" id="st_tiny_adv_icon"></i> Mostrar Ajustes Avanzados de Prompt
+                            </label>
+                            <div id="st_tiny_adv_container" style="display: none; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; margin-top: 5px;">
+                                <label style="font-size: 0.8em;">Header Contexto</label>
+                                <input type="text" class="text_input" id="st_tiny_p_ctx" style="width:100%; margin-bottom:5px; padding:4px; background: rgba(0,0,0,0.7)!important; color: white!important; border: 1px solid #555;" value="${extension_settings.stateTracker.tinyLLM?.prompts?.header_context || '[Context]'}">
+                                
+                                <label style="font-size: 0.8em;">Header Estado</label>
+                                <input type="text" class="text_input" id="st_tiny_p_state" style="width:100%; margin-bottom:5px; padding:4px; background: rgba(0,0,0,0.7)!important; color: white!important; border: 1px solid #555;" value="${extension_settings.stateTracker.tinyLLM?.prompts?.header_state || '[STATE]'}">
+                                
+                                <label style="font-size: 0.8em;">Header Chat</label>
+                                <input type="text" class="text_input" id="st_tiny_p_chat" style="width:100%; margin-bottom:5px; padding:4px; background: rgba(0,0,0,0.7)!important; color: white!important; border: 1px solid #555;" value="${extension_settings.stateTracker.tinyLLM?.prompts?.header_chat || '[CHAT]'}">
+                                
+                                <label style="font-size: 0.8em;">Instrucción Final (Tail Task)</label>
+                                <textarea id="st_tiny_p_task" class="text_input" style="width:100%; height:190px; padding:4px; background: rgba(0,0,0,0.7)!important; color: white!important; border: 1px solid #555;">${extension_settings.stateTracker.tinyLLM?.prompts?.tail_instruction || "[TASK]: You are a logic engine. Analyze the [CHAT] and update the [STATE].\\nRULES:\\n- Output ONLY pure JSON. No markdown, no explanations.\\n- Only include keys that logically changed.\\n{{rule_clothing}}\\n{{rule_biology}}\\n{{rule_groups}}\\n\\nJSON FORMAT EXPECTED:"}</textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 5. Previsualización -->
+                    <div style="background: rgba(50,20,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #ffaa00; margin-bottom: 15px; width: 100%;">
+                        <label style="font-weight: bold; color: #ffcc55; display:block; margin-bottom: 4px;">5. Previsualización del Prompt Completo</label>
+                        <p style="font-size: 0.75em; color: #aaa; margin: 0 0 8px 0;">Pulsa el botón para ver TODO lo que se enviará a la API (Clima, ropa, JSON, etc). Muestra coste de tokens.</p>
+                        <button id="st_tiny_btn_refresh_prev" class="menu_button" style="width: 100%; padding: 8px; background: rgba(100,50,0,0.8); border: 1px solid #ffaa00; margin-bottom: 8px; color: white;"><i class="fa-solid fa-arrows-rotate"></i> Cargar / Actualizar Visualización</button>
+                        
+                        <div id="st_tiny_preview_container" style="display: none; margin-top: 10px;">
+                            <div style="font-size: 0.8em; opacity: 0.8; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center;">
+                                <strong>LO QUE EL LLM VERÁ EXACTAMENTE (TODO):</strong>
+                                <span id="st_tiny_token_count" style="background: rgba(0, 150, 136, 0.4); padding: 4px 8px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(0, 150, 136, 0.8); color: white;"><i class="fa-solid fa-coins"></i> Calculando...</span>
+                            </div>
+                            <label style="font-size: 0.8em; color: #aaddff; margin-bottom: 3px; display:block;"><i class="fa-solid fa-microchip"></i> System Role (Instrucciones Permanentes)</label>
+<textarea id="st_tiny_preview_sys" class="text_input" readonly style="width: 100%; height: 110px; padding: 10px; font-family: monospace; font-size: 0.8em; background: rgba(0,0,0,0.9)!important; color: #aaccff!important; border: 1px solid #555; border-radius: 4px; margin-bottom: 10px;"></textarea>
+
+<label style="font-size: 0.8em; color: #aaddff; margin-bottom: 3px; display:block;"><i class="fa-solid fa-user"></i> User Role (Datos de este turno)</label>
+<textarea id="st_tiny_preview_usr" class="text_input" readonly style="width: 100%; height: 220px; padding: 10px; font-family: monospace; font-size: 0.8em; background: rgba(0,0,0,0.9)!important; color: #aaccff!important; border: 1px solid #555; border-radius: 4px;"></textarea>
+                        </div>
+                    </div>
+                    
+                    <!-- 6. Modo Automático -->
+                    <div style="background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; border-left: 3px solid #aa00ff; margin-bottom: 15px; width: 100%;">
+                        <label style="cursor: pointer; display: flex; align-items: center; color: white;">
+                            <input type="checkbox" id="st_tiny_autoupdate" style="margin-right: 10px; transform: scale(1.3);" ${tinyCfg.autoUpdate ? 'checked' : ''}>
+                            <div style="display:flex; flex-direction:column;">
+                                <strong>Activar MODO AUTOMÁTICO</strong>
+                                <span style="font-size: 0.75em; color: #aaa; margin-top:4px;">Se ejecutará invisiblemente con cada nuevo mensaje del chat. Además, oculta las instrucciones del Main LLM para ahorrarte tokens.</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <!-- Botones de Acción -->
+                    <div style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+                        <button id="st_tiny_btn_send" class="menu_button" style="width: 100%; padding: 15px; background: #005500; font-weight: bold; border-radius: 6px; border: 2px solid #00aa00; color: white; font-size: 1.1em;"><i class="fa-solid fa-bolt"></i> ACTUALIZAR MANUAL AHORA</button>
+                        <button id="st_tiny_btn_stop" class="menu_button" style="width: 100%; padding: 15px; background: #900; font-weight: bold; border-radius: 6px; border: 2px solid #ff0000; color: white; font-size: 1.1em; display: none;"><i class="fa-solid fa-stop"></i> PARAR</button>
+                    </div>
+                </div>
             </div>
-            <pre style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; max-height: 50vh; overflow-y: auto; white-space: pre-wrap; font-family: monospace;">${formatted}</pre>
+
+            <details style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; border: 1px solid #333;">
+                <summary style="cursor: pointer; color: #aaa; font-weight: bold;">(Solo Programadores) Ver JSON actual</summary>
+                <p style="font-size: 0.75em; color: #777; margin: 5px 0;">Esto es solo el código interno del estado actual. No necesitas tocarlo.</p>
+                <pre style="margin-top: 10px; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; border: 1px solid #444; max-height: 20vh; overflow-y: auto; white-space: pre-wrap; font-family: monospace; color: #777;">${formatted}</pre>
+            </details>
         </div>
     `;
-    Popup.show.text(`State Snapshot (Turn ${mesId})`, html);
+    
+    Popup.show.text(`Gestor de Estado (Turno ${mesId})`, html);
+
+    let saveTimeout;
+    function saveTinySettings() {
+        tinyCfg.sysprompt = $('#st_tiny_sysprompt').val();
+        tinyCfg.ctxCount = parseInt($('#st_tiny_ctx').val()) || 1;
+        tinyCfg.profile = $('#st_tiny_profile').val();
+        tinyCfg.maxTokens = parseInt($('#st_tiny_maxtokens').val()) || 200;
+        tinyCfg.autoUpdate = $('#st_tiny_autoupdate').is(':checked');
+        tinyCfg.enabled = $('#st_tiny_master_enabled').is(':checked');
+        tinyCfg.prompts = {
+            header_context: $('#st_tiny_p_ctx').val(),
+            header_state: $('#st_tiny_p_state').val(),
+            header_chat: $('#st_tiny_p_chat').val(),
+            tail_instruction: $('#st_tiny_p_task').val()
+        };
+        
+        clearTimeout(saveTimeout);
+        $('#st_tiny_save_status').show();
+        saveTimeout = setTimeout(() => { $('#st_tiny_save_status').fadeOut(500); }, 2000);
+        
+        const { saveSettingsDebounced } = SillyTavern.getContext();
+        if (saveSettingsDebounced) saveSettingsDebounced();
+    }
+    
+    $('#st_tiny_sysprompt, #st_tiny_ctx, #st_tiny_profile, #st_tiny_maxtokens, #st_tiny_autoupdate, #st_tiny_master_enabled, #st_tiny_p_ctx, #st_tiny_p_state, #st_tiny_p_chat, #st_tiny_p_task').on('change input', saveTinySettings);
+    
+    $('#st_tiny_adv_toggle').on('click', function() {
+        $('#st_tiny_adv_container').slideToggle(200);
+        const icon = $('#st_tiny_adv_icon');
+        icon.toggleClass('fa-caret-right fa-caret-down');
+    });
+    
+    $('#st_tiny_master_enabled').on('change', function() {
+        if ($(this).is(':checked')) {
+            $('#st_tiny_settings_container').slideDown(200);
+        } else {
+            $('#st_tiny_settings_container').slideUp(200);
+        }
+    });
+
+    async function compilePromptLocal() {
+        const { buildTinyPrompt } = await import('../core/tinyLLMEngine.js');
+        return await buildTinyPrompt(mesId, snapshot);
+    }
+
+    async function refreshPreview() {
+        const prompt = await compilePromptLocal();
+        const sys = $('#st_tiny_sysprompt').val();
+        
+        $('#st_tiny_preview_sys').val(sys);
+        $('#st_tiny_preview_usr').val(prompt);
+        $('#st_tiny_preview_container').show();
+        $('#st_tiny_token_count').html('<i class="fa-solid fa-spinner fa-spin"></i> Calculando...');
+        try {
+            const { getTokenCountAsync } = await import('../../../../tokenizers.js');
+            const tokenCount = await getTokenCountAsync(sys + "\n" + prompt);
+            $('#st_tiny_token_count').html('<i class="fa-solid fa-coins"></i> ~' + tokenCount + ' tokens');
+        } catch (e) {
+            $('#st_tiny_token_count').html('<i class="fa-solid fa-coins"></i> est: ' + Math.ceil((sys.length + prompt.length) / 4));
+        }
+    }
+    
+    $('#st_tiny_btn_refresh_prev').on('click', async function() {
+        saveTinySettings();
+        await refreshPreview();
+    });
+
+    let currentAbortController = null;
+
+    $('#st_tiny_btn_stop').on('click', function() {
+        if (currentAbortController) {
+            currentAbortController.abort();
+            currentAbortController = null;
+        }
+    });
+
+    $('#st_tiny_btn_send').on('click', async function() {
+        saveTinySettings(); 
+        
+        const btn = $(this);
+        const stopBtn = $('#st_tiny_btn_stop');
+        const originalHtml = btn.html();
+        
+        btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Conectando...').prop('disabled', true);
+        stopBtn.show();
+        
+        currentAbortController = new AbortController();
+        
+        try {
+            const { executeTinyLLM } = await import('../core/tinyLLMEngine.js');
+            const result = await executeTinyLLM(mesId, message, currentAbortController.signal);
+            
+            if (result.changed > 0 && Object.keys(result.parsedUpdates || {}).length > 0) {
+                $('#dialogue_popup_ok').click();
+                $('#dialogue_popup_cancel').click();
+                if (typeof layer_close === 'function') layer_close('dialogue_popup');
+                
+                await renderTinyInterceptPanel(result.parsedUpdates, mesId, message.extra.stateTrackerSnapshot, result.text);
+            } else if (result.changed === 0) {
+                toastr.info("Sin cambios lógicos.", "Tiny LLM");
+            }
+        } catch (error) {
+            if (error.name === 'AbortError' || (error.message && error.message.includes('aborted'))) {
+                toastr.warning("Generación cancelada por el usuario.", "Tiny LLM");
+            } else {
+                toastr.error(error.message, "Error Tiny LLM");
+            }
+        } finally {
+            btn.html(originalHtml).prop('disabled', false);
+            stopBtn.hide();
+            currentAbortController = null;
+        }
+    });
 }
 
 function renderMessageTimeSettings(mesId, message, widgetEl) {
@@ -722,5 +955,75 @@ export function refreshAllWidgets() {
             if (existingClothingWidget.length > 0) existingClothingWidget.remove();
         }
 
+    });
+}
+
+
+export async function renderTinyInterceptPanel(updates, mesId, snapshot, rawText = "") {
+    if (!updates || Object.keys(updates).length === 0) return;
+    
+    // Si la UI de SillyTavern existe, mostramos panel. Si no, aplicamos? Mejor siempre mostrar panel.
+    $('.st-tiny-intercept').remove();
+    
+    let htmlLines = '';
+    for (const [key, val] of Object.entries(updates)) {
+        htmlLines += `
+        <div style="display:flex; align-items:center; margin-bottom:4px; font-size: 0.9em;">
+            <input type="checkbox" class="st-tiny-cb" data-key="${key.replace(/"/g, '&quot;')}" data-val="${String(val).replace(/"/g, '&quot;')}" checked style="margin-right:8px; transform: scale(1.2);">
+            <strong>${key}</strong>: <span>${val}</span>
+        </div>`;
+    }
+    
+    const panelId = 'st-tiny-intercept-' + mesId;
+    const panelHtml = `
+    <div id="${panelId}" class="st-tiny-intercept" style="position: fixed; top: 80px; left: 50%; transform: translateX(-50%); width: 92%; max-width: 400px; z-index: 99999; background: var(--SmartThemeBlurTintColor, rgba(15,30,15,0.95)); border: 2px solid #00aa00; padding: 15px; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.9); backdrop-filter: blur(8px);">
+        <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 1.1em; text-align: center; color: #55ff55;"><i class="fa-solid fa-microchip"></i> Cambios Propuestos (Tiny LLM)</h4>
+        <div style="margin-bottom: 15px; max-height: 180px; overflow-y: auto; text-align: left; padding: 5px; background: rgba(0,0,0,0.5); border-radius: 4px;">${htmlLines}</div>
+        <div style="display: flex; gap: 8px;">
+            <button id="btn-tiny-acc-${mesId}" class="menu_button" style="flex: 1; margin: 0; padding: 10px; background: #006400; font-weight: bold; font-size: 0.95em;">Aplicar Selección</button>
+            <button id="btn-tiny-rej-${mesId}" class="menu_button" style="flex: 1; margin: 0; padding: 10px; background: #900; font-weight: bold; font-size: 0.95em;">Descartar Todo</button>
+        </div>
+        ${rawText ? `<div style="margin-top: 10px; text-align: center;">
+            <button id="btn-tiny-raw-${mesId}" style="background: none; border: 1px solid #555; color: #aaa; cursor: pointer; border-radius: 4px; padding: 4px 8px; font-size: 0.8em;"><i class="fa-solid fa-bug"></i> (Solo Debug) Ver Respuesta Cruda</button>
+            <textarea id="st-tiny-raw-area-${mesId}" readonly style="display: none; width: 100%; height: 120px; margin-top: 8px; background: rgba(0,0,0,0.8); border: 1px solid #444; color: #aaccff; font-family: monospace; font-size: 0.8em; padding: 6px;"></textarea>
+        </div>` : ''}
+    </div>`;
+    
+    $('body').append(panelHtml);
+    
+    if (rawText) {
+        $(`#btn-tiny-raw-${mesId}`).on('click', function() {
+            const area = $(`#st-tiny-raw-area-${mesId}`);
+            if (area.is(':visible')) {
+                area.hide();
+            } else {
+                area.val(rawText).show();
+            }
+        });
+    }
+
+    $(`#btn-tiny-acc-${mesId}`).on('click', async function() {
+        const filteredUpdates = {};
+        $(`#${panelId} .st-tiny-cb:checked`).each(function() {
+            const k = $(this).attr('data-key');
+            let v = $(this).attr('data-val');
+            // Try parse number or array if needed, but for simplicity:
+            if (v === 'true') v = true;
+            else if (v === 'false') v = false;
+            else if (!isNaN(v) && v.trim() !== '') v = Number(v);
+            else if (v.startsWith('[') && v.endsWith(']')) {
+                try { v = JSON.parse(v); } catch(e){}
+            }
+            filteredUpdates[k] = v;
+        });
+        
+        const { applyTinyUpdates } = await import('../core/tinyLLMEngine.js');
+        const changes = await applyTinyUpdates(filteredUpdates, mesId, snapshot);
+        toastr.success(`Tiny LLM aplicó ${changes} variables.`, "StateTracker");
+        $(`#${panelId}`).fadeOut(200, function() { $(this).remove(); });
+    });
+    
+    $(`#btn-tiny-rej-${mesId}`).on('click', function() {
+        $(`#${panelId}`).fadeOut(200, function() { $(this).remove(); });
     });
 }

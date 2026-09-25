@@ -102,14 +102,23 @@ export function getCharacterData() {
             extension_settings.stateTracker.chats[chatId].time = { minutes: 480 }; // 08:00 AM default
             saveSettingsDebounced();
         }
-        return extension_settings.stateTracker.chats[chatId];
+        
+        const data = extension_settings.stateTracker.chats[chatId];
+        // Forzar inicializacion de ropa y biologia
+        if (data && !data.clothing) data.clothing = { equipped: [] };
+        if (data && !data.biology) data.biology = { hunger: 0, thirst: 0, fatigue: 0, hygiene: 100, bladder: 0, bowels: 0, is_pregnant: false, pregnancy_days: 0 };
+        return data;
     }
 
     // Fallback if not inside a chat (e.g. character management screen)
     if (!extension_settings.stateTracker.characters[avatar].time) {
         extension_settings.stateTracker.characters[avatar].time = { minutes: 480 };
     }
-    return extension_settings.stateTracker.characters[avatar];
+    
+    const charData = extension_settings.stateTracker.characters[avatar];
+    if (charData && !charData.clothing) charData.clothing = { equipped: [] };
+    if (charData && !charData.biology) charData.biology = { hunger: 0, thirst: 0, fatigue: 0, hygiene: 100, bladder: 0, bowels: 0, is_pregnant: false, pregnancy_days: 0 };
+    return charData;
 }
 
 export function findDatabaseKey(llmKey, groups) {

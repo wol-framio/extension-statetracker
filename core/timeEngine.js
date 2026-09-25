@@ -125,8 +125,8 @@ export function formatTimePrompt() {
     const userName = context.name1 || 'User';
     
     let prompt = isEn ?
-        `[Internal Clock: Month: ${parsed.monthName} | Day: ${parsed.date}, ${parsed.dayName} | Year: ${parsed.year} | Time: ${parsed.timeStringVisual} | Phase: ${parsed.periodName}` :
-        `[Reloj Interno: Mes: ${parsed.monthName} | Día: ${parsed.date}, ${parsed.dayName} | Año: ${parsed.year} | Hora: ${parsed.timeStringVisual} | Fase: ${parsed.periodName}`;
+        `[Clock: ${parsed.year}-${parsed.monthName.substring(0,3)}-${parsed.date} ${parsed.dayName.substring(0,3)} ${parsed.timeStringVisual} | ${parsed.periodName}` :
+        `[Reloj: ${parsed.year}-${parsed.monthName.substring(0,3)}-${parsed.date} ${parsed.dayName.substring(0,3)} ${parsed.timeStringVisual} | ${parsed.periodName}`;
     
     if (data.weather) {
         prompt += formatWeatherPrompt(data.weather, parsed.isNight);

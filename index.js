@@ -3,7 +3,6 @@ import { getCharacterData, getCharacterAvatar, saveAndUpdateHUD } from './core/s
 import { initHUD, updateHUD } from './ui/hudRenderer.js';
 import { showQuickStatePopup } from './ui/popupBuilder.js';
 import { onGenerateBeforeCombinePrompts, onChatCompletionPromptReady, onMessageReceived, onMessageSent } from './core/llmParser.js';
-import { onMessageDeleted, onMessageSwiped } from './core/persistenceManager.js';
 import { initWeatherSettings, WEATHER_DICTIONARY, TEMPERATURE_PRESETS } from './core/weatherEngine.js';
 import { CLOTHING_SLOTS, getCharacterProfile, initClothingState } from './core/clothingEngine.js';
 import { initCalendarSettings, addEvent, removeEvent } from './core/calendarEngine.js';
@@ -12,6 +11,8 @@ import { initBiologySettings, BIOLOGY_SYSTEMS } from './core/biologyEngine.js';
 if (!extension_settings.stateTracker) {
     extension_settings.stateTracker = {
         enabled: true,
+        promptPosition: 1,
+        promptDepth: 0,
         characters: {}, // Keyed by character avatar (legacy/fallback)
         chats: {},      // Keyed by chatId (per session)
         presets: {},    // Keyed by preset name
@@ -23,6 +24,10 @@ if (!extension_settings.stateTracker) {
             prompt: 'en'
         }
     };
+}
+
+if (extension_settings.stateTracker.enabled === undefined) {
+    extension_settings.stateTracker.enabled = true;
 }
 
 if (!extension_settings.stateTracker.chats) {
@@ -103,6 +108,9 @@ function renderSettings() {
     }
     $('#st_lang_ui').val(extension_settings.stateTracker.lang.ui);
     $('#st_lang_prompt').val(extension_settings.stateTracker.lang.prompt);
+    
+    $('#st_prompt_pos').val(extension_settings.stateTracker.promptPosition !== undefined ? extension_settings.stateTracker.promptPosition : 1);
+    $('#st_prompt_depth').val(extension_settings.stateTracker.promptDepth !== undefined ? extension_settings.stateTracker.promptDepth : 0);
     
     
     $('#st_weather_enabled').prop('checked', extension_settings.stateTracker.weather.enabled);
@@ -230,10 +238,14 @@ function renderWardrobe() {
             const slotName = CLOTHING_SLOTS[item.slot]?.name_es || item.slot;
             itemsContainer.append(`
                 <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 5px; margin-bottom: 4px; border-radius: 4px;">
-                    <div>
-                        <strong style="font-size: 0.85em;">${item.name}</strong> <span style="font-size: 0.75em; opacity: 0.7;">(${key}) - ${slotName}</span>
+                    <div style="flex: 1; min-width: 0;">
+                        <strong style="font-size: 0.85em; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.name}</strong>
+                        <span style="font-size: 0.75em; opacity: 0.7; word-break: break-all;">(${key}) - ${slotName}</span>
                     </div>
-                    <i class="fa-solid fa-trash st_wd_del_item" data-id="${key}" style="cursor: pointer; color: #ff5555; padding: 4px;"></i>
+                    <div style="display: flex; gap: 12px; margin-left: 10px; align-items: center;">
+                        <i class="fa-solid fa-pen st_wd_edit_item" data-id="${key}" data-name="${item.name}" style="cursor: pointer; color: #55aaff; font-size: 1.1em; padding: 4px;" title="Editar"></i>
+                        <i class="fa-solid fa-trash st_wd_del_item" data-id="${key}" style="cursor: pointer; color: #ff5555; font-size: 1.1em; padding: 4px;" title="Eliminar"></i>
+                    </div>
                 </div>
             `);
         }
@@ -402,6 +414,118 @@ function setupUIHandlers() {
         renderWardrobe();
     });
     
+    
+    
+
+    
+    $(document).off('click', '.st_wd_edit_item').on('click', '.st_wd_edit_item', function() {
+        const oldId = $(this).data('id');
+        
+        const avatar = getCharacterAvatar();
+        const profile = getCharacterProfile(avatar);
+        if (!profile || !profile.wardrobe.items[oldId]) return;
+        
+        const oldName = profile.wardrobe.items[oldId].name || '';
+        const oldNameEn = profile.wardrobe.items[oldId].name_en || '';
+        
+        $('.st-wd-edit-modal').remove();
+        
+        const modalHtml = `
+        <div class="st-wd-edit-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 999999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px);">
+            <div style="background: var(--SmartThemeBlurTintColor, #151515); border: 1px solid var(--SmartThemeBorderColor, #444); padding: 20px; border-radius: 8px; width: 90%; max-width: 350px; box-shadow: 0 10px 30px rgba(0,0,0,0.9);">
+                <h4 style="margin-top: 0; margin-bottom: 15px; font-size: 1.2em; color: #fff; text-align: center;">Editar Prenda</h4>
+                
+                <label style="font-size: 0.85em; opacity: 0.8; display: block; margin-bottom: 5px;">ID Interno (No tocar):</label>
+                <input type="text" id="st_wd_edit_inp_id" class="text_input" value="${oldId}" style="width: 100%; box-sizing: border-box; padding: 10px; margin-bottom: 10px; font-size: 0.95em; background: rgba(0,0,0,0.7) !important; color: #fff !important; border: 1px solid #555 !important; border-radius: 4px;">
+                
+                <label style="font-size: 0.85em; opacity: 0.8; display: block; margin-bottom: 5px;">Nombre (Para ti en UI):</label>
+                <input type="text" id="st_wd_edit_inp_name" class="text_input" value="${oldName}" style="width: 100%; box-sizing: border-box; padding: 10px; margin-bottom: 10px; font-size: 0.95em; background: rgba(0,0,0,0.7) !important; color: #fff !important; border: 1px solid #555 !important; border-radius: 4px;">
+                
+                <label style="font-size: 0.85em; opacity: 0.8; display: block; margin-bottom: 5px;">Nombre en Inglés (Para el LLM):</label>
+                <input type="text" id="st_wd_edit_inp_name_en" class="text_input" value="${oldNameEn}" placeholder="Opcional. Deja vacío para usar el mismo." style="width: 100%; box-sizing: border-box; padding: 10px; margin-bottom: 20px; font-size: 0.95em; background: rgba(0,0,0,0.7) !important; color: #fff !important; border: 1px solid #555 !important; border-radius: 4px;">
+                
+                <div style="display: flex; gap: 10px;">
+                    <button class="menu_button st_wd_edit_btn_save" style="flex: 1; padding: 12px; margin: 0; background: #006400; color: white; font-weight: bold; border-radius: 4px; border: none;">Guardar</button>
+                    <button class="menu_button st_wd_edit_btn_cancel" style="flex: 1; padding: 12px; margin: 0; background: #900; color: white; font-weight: bold; border-radius: 4px; border: none;">Cancelar</button>
+                </div>
+            </div>
+        </div>`;
+        
+        $('body').append(modalHtml);
+        
+        $('.st_wd_edit_btn_cancel').off('click').on('click', function() {
+            $('.st-wd-edit-modal').fadeOut(150, function() { $(this).remove(); });
+        });
+        
+        $('.st_wd_edit_btn_save').off('click').on('click', function() {
+            let newId = $('#st_wd_edit_inp_id').val().trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+            let newName = $('#st_wd_edit_inp_name').val().trim();
+            let newNameEn = $('#st_wd_edit_inp_name_en').val().trim();
+            
+            if (!newNameEn) newNameEn = newName;
+            
+            if (!newId || !newName) {
+                toastr.error("ID y Nombre son obligatorios.");
+                return;
+            }
+            
+            const avatar = getCharacterAvatar();
+            const profile = getCharacterProfile(avatar);
+            if (!profile) return;
+            
+            if (newId !== oldId) {
+                if (profile.wardrobe.items[newId]) {
+                    toastr.error("El ID '" + newId + "' ya existe.");
+                    return;
+                }
+                
+                // Mover datos
+                profile.wardrobe.items[newId] = profile.wardrobe.items[oldId];
+                delete profile.wardrobe.items[oldId];
+                
+                // Actualizar nombre
+                profile.wardrobe.items[newId].name = newName;
+                profile.wardrobe.items[newId].name_en = newNameEn;
+                
+                // Actualizar Outfits (Cascada)
+                for (let oId in profile.wardrobe.outfits) {
+                    let itemsArray = profile.wardrobe.outfits[oId];
+                    let idx = itemsArray.indexOf(oldId);
+                    if (idx !== -1) {
+                        itemsArray[idx] = newId;
+                    }
+                }
+            } else {
+                profile.wardrobe.items[oldId].name = newName;
+                profile.wardrobe.items[oldId].name_en = newNameEn;
+            }
+            
+            saveAndUpdateHUD();
+            renderWardrobe();
+            $('.st-wd-edit-modal').remove();
+            toastr.success("Prenda modificada con éxito.", "State Tracker");
+        });
+    });
+
+    
+    $(document).off('change', '.st_wd_edit_item_name').on('change', '.st_wd_edit_item_name', function() {
+        const avatar = getCharacterAvatar();
+        const profile = getCharacterProfile(avatar);
+        if (!profile) return;
+        const id = $(this).data('id');
+        const newName = $(this).val().trim();
+        
+        if (newName && profile.wardrobe.items[id]) {
+            profile.wardrobe.items[id].name = newName;
+            profile.wardrobe.items[id].name_en = newName; // Sincroniza el ingles para el LLM
+            saveAndUpdateHUD();
+            toastr.success("Prenda renombrada: " + newName, "State Tracker");
+        } else if (!newName) {
+            // Revert si lo dejan vacio
+            $(this).val(profile.wardrobe.items[id].name);
+        }
+    });
+
     $(document).off('click', '.st_wd_del_item').on('click', '.st_wd_del_item', function() {
         const avatar = getCharacterAvatar();
         const profile = getCharacterProfile(avatar);
@@ -667,6 +791,25 @@ jQuery(() => {
                                     <option value="es">Español</option>
                                 </select>
                             </div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 6px; margin-bottom: 15px; margin-top: 15px;">
+                            <strong style="color: #aaccff; font-size: 0.9em; margin-bottom: 5px; display: block;"><i class="fa-solid fa-syringe"></i> Configuración del LLM (Saliency)</strong>
+                            <div style="font-size: 0.8em; opacity: 0.8; margin-bottom: 10px; line-height: 1.3;">
+                                Define dónde se inyecta el rastreador de estado. Mientras más al fondo (IN_CHAT / Author's Note), más caso le hará el LLM (menor decadencia de contexto).
+                            </div>
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                                <span style="font-size: 0.85em; opacity: 0.9;" title="Ubicación estructural del texto.">Posición de Inyección:</span>
+                                <select id="st_prompt_pos" class="text_input" style="width: 160px; padding: 4px; background: rgba(10,15,20,0.8) !important; color: #ffffff !important; border: 1px solid rgba(100,150,200,0.4) !important; border-radius: 4px;">
+                                    <option value="0">IN_PROMPT (Arriba / Débil)</option>
+                                    <option value="1">Author's Note (Fondo)</option>
+                                    <option value="2">IN_CHAT (Fondo Absoluto)</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                                <span style="font-size: 0.85em; opacity: 0.9;" title="0 = Inmediatamente antes de la IA. 1 = Antes de tu último mensaje, etc.">Profundidad (0 a 10):</span>
+                                <input type="number" id="st_prompt_depth" class="text_input" style="width: 60px; padding: 4px; background: rgba(10,15,20,0.8) !important; color: #ffffff !important; border: 1px solid rgba(100,150,200,0.4) !important; border-radius: 4px;" min="0" max="10" title="Mensajes de distancia desde el final. 0 = Máxima atención.">
+                            </div>
+                            <div style="font-size: 0.75em; opacity: 0.6; font-style: italic;">* Recomendado: IN_CHAT con Profundidad 0.</div>
                         </div>
                         
                         <div class="inline-drawer" style="margin-top: 15px; border: 1px solid rgba(0, 150, 255, 0.3); border-radius: 8px;">

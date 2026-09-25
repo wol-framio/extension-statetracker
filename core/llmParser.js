@@ -14,7 +14,12 @@ export function buildStatePrompt() {
     const userName = context.userName || 'Yasuo';
 
     let prompt = `\n\n[CURRENT STATE & ENVIRONMENT VARIABLES]\n`;
-    prompt += formatTimePrompt();
+    
+    let timePrompt = formatTimePrompt();
+    let hasTime = timePrompt && timePrompt.trim() !== '';
+    if (hasTime) {
+        prompt += timePrompt;
+    }
     
     let hasVars = false;
 
@@ -24,27 +29,31 @@ export function buildStatePrompt() {
         const keys = Object.keys(group.variables);
         if (keys.length > 0) {
             hasVars = true;
+            let groupVars = [];
             keys.forEach(key => {
                 const resolvedKey = key.replace(/\{\{char\}\}/gi, charName).replace(/\{\{user\}\}/gi, userName);
-                let instructionStr = (group.instructions && group.instructions[key]) ? ` [Constraint: ${group.instructions[key]}]` : '';
+                let instructionStr = (group.instructions && group.instructions[key]) ? ` (C: ${group.instructions[key]})` : '';
                 if (group.locked || (group.locks && group.locks[key])) {
-                    instructionStr += ' [LOCKED: DO NOT UPDATE]';
+                    instructionStr += ' [LOCKED]';
                 }
-                prompt += `- ${resolvedKey}: ${group.variables[key]}${instructionStr}\n`;
+                groupVars.push(`${resolvedKey}: ${group.variables[key]}${instructionStr}`);
             });
+            prompt += `[${group.name || 'Vars'}]: ` + groupVars.join(' | ') + `\n`;
         }
     });
 
-    if (!hasVars) return '';
-
-    let instructions = extension_settings.stateTracker.customPrompt;
-    if (!instructions || instructions.trim() === "") {
-        instructions = `To update any variable when the scene, time, clothes, positions, money, or state changes, you MUST append a tag at the very end of your response:\n` +
-        `[UPDATE_STATE: key_name=value | another_key=value2]\n` +
-        `Example: [UPDATE_STATE: location_room=Kitchen | chronos_time=08:00 | {{char}}_position=Standing]. Update only the keys that changed. Unchanged keys preserve their values. You are allowed to update as many keys as necessary, there is no limit.`;
+    if (hasVars) {
+        if (extension_settings.stateTracker.tinyLLM && extension_settings.stateTracker.tinyLLM.enabled !== false) {
+            hasVars = false;
+        }
+        let instructions = extension_settings.stateTracker.customPrompt;
+        if (!instructions || instructions.trim() === "") {
+            instructions = `To update any variable when the scene, time, clothes, positions, money, or state changes, you MUST append a JSON block at the very end of your response:\n` +
+            `\`\`\`json\n{"StateTracker": {"key_name": "value", "another_key": "value2"}}\n\`\`\`\n` +
+            `Update only the keys that changed. Unchanged keys preserve their values. You are allowed to update as many keys as necessary, there is no limit.`;
+        }
+        prompt += `\n${instructions}\n`;
     }
-
-    prompt += `\n${instructions}\n`;
     
     // Inyectar estado físico biológico de forma natural si existe
     const bioPrompt = getBiologyPrompt(data);
@@ -61,26 +70,33 @@ export function buildStatePrompt() {
     const clothingInst = getClothingLLMInstructions();
     if (clothingInst) prompt += `\n${clothingInst}\n`;
     
+    if (!hasVars && !hasTime && !bioPrompt && !clothingPrompt) return '';
+    
     return prompt;
 }
 
-export function onGenerateBeforeCombinePrompts(data) {
-    if (!extension_settings.stateTracker.enabled) return;
+export function injectStatePrompt() {
+    const context = SillyTavern.getContext();
+    if (!context.setExtensionPrompt) return;
+
+    if (!extension_settings.stateTracker.enabled) {
+        context.setExtensionPrompt('state-tracker', '', extension_settings.stateTracker.promptPosition || 1, extension_settings.stateTracker.promptDepth || 0, false, 0);
+        return;
+    }
+    
     const prompt = buildStatePrompt();
-    if (prompt) data.main = data.main + prompt;
+    // position: 0 (IN_PROMPT), depth: 0, allowScan: false, role: 0 (SYSTEM)
+    const pos = extension_settings.stateTracker.promptPosition !== undefined ? extension_settings.stateTracker.promptPosition : 1;
+    const depth = extension_settings.stateTracker.promptDepth !== undefined ? extension_settings.stateTracker.promptDepth : 0;
+    context.setExtensionPrompt('state-tracker', prompt || '', pos, depth, false, 0);
+}
+
+export function onGenerateBeforeCombinePrompts(data) {
+    injectStatePrompt();
 }
 
 export function onChatCompletionPromptReady(eventData) {
-    if (!extension_settings.stateTracker.enabled) return;
-    const prompt = buildStatePrompt();
-    if (!prompt) return;
-
-    let systemMessage = eventData.chat.find(msg => msg.role === 'system');
-    if (systemMessage) {
-        systemMessage.content = systemMessage.content + prompt;
-    } else {
-        eventData.chat.unshift({ role: 'system', content: prompt });
-    }
+    injectStatePrompt();
 }
 
 export async function onMessageSent(messageId) {
@@ -150,39 +166,94 @@ export async function onMessageReceived(messageId) {
         if (updateMessageBlock) updateMessageBlock(Number(messageId), message);
     }
     
-    const stateRegex = /\[UPDATE_STATE:\s*([^\]]+)\]/i;
-    const match = stateRegex.exec(text);
+    
+    // Check if Tiny LLM Auto-Update is enabled
+    if (extension_settings.stateTracker.tinyLLM && extension_settings.stateTracker.tinyLLM.autoUpdate) {
+        // Run Tiny LLM asynchronously without blocking chat
+        setTimeout(async () => {
+            try {
+                console.log("[StateTracker] Running Auto Tiny LLM for Turn", messageId);
+                const { getCharacterData, saveAndUpdateHUD } = await import('./stateManager.js');
+                // Ensure snapshot is ready
+                await snapshotStateToMessage(messageId, recordTs);
+                const result = await executeTinyLLM(messageId, message, null);
+                if (Object.keys(result.parsedUpdates).length > 0) {
+                    const { renderTinyInterceptPanel } = await import('../ui/metadataViewer.js');
+                    const snapshot = message.extra.stateTrackerSnapshot;
+                    await renderTinyInterceptPanel(result.parsedUpdates, messageId, snapshot, result.text);
+                }
+            } catch (err) {
+                console.warn("[StateTracker] Tiny LLM Auto Failed:", err);
+            }
+        }, 500);
+        
+        // Skip default parsing since Tiny LLM handles it
+        await snapshotStateToMessage(messageId, recordTs);
+        if (recordTs !== undefined) {
+            getCharacterData().time.timestamp = recordTs + (5 * 60000);
+            saveAndUpdateHUD();
+        }
+        return;
+    }
 
-    if (match) {
+    const searchArea = text.slice(-600);
+    const jsonRegex = /```json\s*(\{.*?"StateTracker".*?\})\s*```/is;
+    const oldTagRegex = /\[UPDATE_STATE:\s*([^\]]+)\]/gi;
+    
+    let matchJson = jsonRegex.exec(searchArea);
+    let matchOld = oldTagRegex.exec(text);
+
+    if (matchJson || matchOld) {
         const data = getCharacterData();
         const { Popup, updateMessageBlock, saveChat } = SillyTavern.getContext();
         
         if (data && data.groups) {
-            const commandString = match[1];
-            const pairs = commandString.split('|');
             let proposedChanges = [];
+            let cleanText = text;
 
-            pairs.forEach(pair => {
-                const parts = pair.split('=');
-                if (parts.length === 2) {
-                    const llmKey = parts[0].trim().toLowerCase().replace(/\s+/g, '_');
-                    const value = parts[1].trim();
-
+            if (matchJson) {
+                let parsedData;
+                try {
+                    parsedData = JSON.parse(matchJson[1]);
+                } catch (e) {
+                    parsedData = { StateTracker: {} };
+                }
+                const stateUpdates = parsedData.StateTracker || {};
+                for (const [key, value] of Object.entries(stateUpdates)) {
+                    const llmKey = key.trim().toLowerCase().replace(/\s+/g, '_');
+                    const strValue = String(value).trim();
                     const matchKey = findDatabaseKey(llmKey, data.groups);
                     if (matchKey) {
-                        // Verificar si el grupo o la variable están bloqueados
                         const isGroupLocked = matchKey.group.locked;
                         const isVarLocked = matchKey.group.locks && matchKey.group.locks[matchKey.key];
-                        
                         if (!isGroupLocked && !isVarLocked) {
-                            proposedChanges.push({ group: matchKey.group, key: matchKey.key, value: value });
+                            proposedChanges.push({ group: matchKey.group, key: matchKey.key, value: strValue });
                         }
                     }
                 }
-            });
+                cleanText = text.replace(jsonRegex, '').trim();
+            } else if (matchOld) {
+                // Fallback a la etiqueta vieja
+                const commandString = matchOld[1];
+                const pairs = commandString.split('|');
+                pairs.forEach(pair => {
+                    const parts = pair.split('=');
+                    if (parts.length === 2) {
+                        const llmKey = parts[0].trim().toLowerCase().replace(/\s+/g, '_');
+                        const value = parts[1].trim();
+                        const matchKey = findDatabaseKey(llmKey, data.groups);
+                        if (matchKey) {
+                            const isGroupLocked = matchKey.group.locked;
+                            const isVarLocked = matchKey.group.locks && matchKey.group.locks[matchKey.key];
+                            if (!isGroupLocked && !isVarLocked) {
+                                proposedChanges.push({ group: matchKey.group, key: matchKey.key, value: value });
+                            }
+                        }
+                    }
+                });
+                cleanText = text.replace(oldTagRegex, '').trim();
+            }
 
-            // Strip the tag from the message IMMEDIATELY to keep chat clean
-            const cleanText = text.replace(/\[UPDATE_STATE:\s*[^\]]+\]/gi, '').trim();
             message.mes = cleanText;
             if (updateMessageBlock) updateMessageBlock(Number(messageId), message);
 
