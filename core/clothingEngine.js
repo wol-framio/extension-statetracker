@@ -170,11 +170,7 @@ export function getClothingPrompt(chatData, charName, avatar) {
         prompt += isEn ? `[Available Wardrobe Items to Equip: ${invList}]\n` : `[Prendas Disponibles para Equipar: ${invList}]\n`;
     }
     
-    const availableOutfits = Object.keys(profile.wardrobe.outfits);
-    if (availableOutfits.length > 0) {
-        const outList = availableOutfits.join(', ');
-        prompt += isEn ? `[Available Outfits to Equip: ${outList}]\n` : `[Conjuntos Disponibles para Equipar: ${outList}]\n`;
-    }
+
     
     return prompt.trim();
 }
@@ -185,8 +181,8 @@ export function getClothingLLMInstructions() {
     const isEn = lang === 'en';
     
     if (isEn) {
-        return `[System Note: To interact with clothing, strictly output tags at the end of your response. To put on an item: [EQUIP: item_id]. To take off an item: [UNEQUIP: item_id]. To change to an outfit: [OUTFIT: outfit_id]. These tags modify the inventory state seamlessly.]`;
+        return `[System Note: To interact with clothing, strictly output tags at the end of your response. To put on an item: [EQUIP: item_id]. To take off an item: [UNEQUIP: item_id]. These tags modify the inventory state seamlessly.]`;
     } else {
-        return `[Nota del Sistema: Para interactuar con la ropa, emite etiquetas estrictamente al final de tu respuesta. Para ponerse algo: [EQUIP: item_id]. Para quitarse algo: [UNEQUIP: item_id]. Para cambiar a un conjunto: [OUTFIT: outfit_id]. Estas etiquetas modifican el estado de inventario de manera oculta.]`;
+        return `[Nota del Sistema: Para interactuar con la ropa, emite etiquetas estrictamente al final de tu respuesta. Para ponerse algo: [EQUIP: item_id]. Para quitarse algo: [UNEQUIP: item_id]. Estas etiquetas modifican el estado de inventario de manera oculta.]`;
     }
 }

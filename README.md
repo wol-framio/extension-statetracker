@@ -64,8 +64,7 @@ Si decides no usar el motor **Tiny LLM** en segundo plano, o si prefieres que tu
 Modifican el inventario de vestimenta resolviendo automáticamente colisiones corporales (Slots).
 - **Equipar:** `[EQUIP: item_id]`
 - **Desequipar:** `[UNEQUIP: item_id]`
-- **Cambiar Conjunto Completo:** `[OUTFIT: outfit_id]`
-*Nota del Sistema inyectada al LLM:* `To interact with clothing, strictly output tags at the end of your response. To put on an item: [EQUIP: item_id]. To take off an item: [UNEQUIP: item_id]. To change to an outfit: [OUTFIT: outfit_id]. These tags modify the inventory state seamlessly.`
+*Nota del Sistema inyectada al LLM:* `To interact with clothing, strictly output tags at the end of your response. To put on an item: [EQUIP: item_id]. To take off an item: [UNEQUIP: item_id]. These tags modify the inventory state seamlessly.`
 
 ### 2. Etiquetas de Actualización de Estado (Custom Variables)
 Actualiza variables personalizadas (Grupos) sin usar JSON (formato heredado/ligero).

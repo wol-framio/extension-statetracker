@@ -99,7 +99,7 @@ ${cleanFormatted}
     
     let finalTask = hTask;
     if (extension_settings.stateTracker.clothing_enabled) {
-        finalTask = finalTask.replace('{{rule_clothing}}', "- CLOTHING: Do NOT use numbers or arrays. Output 'clothing_events' as an array of tags. Tags allowed: [EQUIP: item_id], [UNEQUIP: item_id], [OUTFIT: outfit_id]. Example: {\"clothing_events\": [\"[EQUIP: jacket]\"]}");
+        finalTask = finalTask.replace('{{rule_clothing}}', "- CLOTHING: Do NOT use numbers or arrays. Output 'clothing_events' as an array of tags. Tags allowed: [EQUIP: item_id], [UNEQUIP: item_id]. Example: {\"clothing_events\": [\"[EQUIP: jacket]\"]}");
     } else {
         finalTask = finalTask.replace('{{rule_clothing}}\n', '').replace('{{rule_clothing}}', '');
     }
