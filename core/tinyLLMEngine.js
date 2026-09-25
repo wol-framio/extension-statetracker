@@ -19,21 +19,46 @@ export async function buildTinyPrompt(mesId, snapshot) {
     const hContext = prompts.header_context || '[Context]';
     const hState = prompts.header_state || '[STATE]';
     const hChat = prompts.header_chat || '[CHAT]';
-        // Auto-migrate old short prompt
+    
+    // Auto-migrate old short prompt
     if (prompts.tail_instruction && (prompts.tail_instruction.includes('[TASK]: Extract logical changes') || prompts.tail_instruction.includes('[TAREA]: Extrae cambios') || prompts.tail_instruction.includes("Use 'biology_[stat]' with numeric values") || prompts.tail_instruction.includes("3. CLOTHING:"))) {
         prompts.tail_instruction = "[TASK]: You are a logic engine. Analyze the [CHAT] and update the [STATE].\nRULES:\n- Output ONLY pure JSON. No markdown, no explanations.\n- Only include keys that logically changed.\n{{rule_clothing}}\n{{rule_biology}}\n{{rule_groups}}\n\nJSON FORMAT EXPECTED:";
     }
     const hTask = prompts.tail_instruction || "[TASK]: You are a logic engine. Analyze the [CHAT] and update the [STATE].\nRULES:\n- Output ONLY pure JSON. No markdown, no explanations.\n- Only include keys that logically changed.\n{{rule_clothing}}\n{{rule_biology}}\n{{rule_groups}}\n\nJSON FORMAT EXPECTED:";
 
-    let cleanFormatted = "";
+    // 1. Chat History (MainLLM messages)
+    const ctxCount = tinyCfg.ctxCount || 1;
+    const targetMesId = parseInt(mesId);
+    let chatHist = `${hChat}\n`;
+    for (let i = targetMesId - ctxCount + 1; i <= targetMesId; i++) {
+        if (i < 0) continue;
+        const m = context.chat[i];
+        if (m) {
+            const name = m.is_user ? (context.name1 || 'User') : (context.characters[context.characterId]?.name || 'Char');
+            chatHist += `[${name}]: ${m.mes}\n\n`;
+        }
+    }
+
+    let clothStr = "";
+    let bioStr = "";
+    let groupStr = "";
+
     if (snapshot) {
-        if (snapshot.time) {
-            const fakeWeather = snapshot.weather || null;
-            const p = parseTimestamp(snapshot.time.timestamp, fakeWeather, 'en'); // Changed to EN for consistency
-            cleanFormatted += `${hContext}: ${p.date} ${p.monthName} ${p.year}, ${p.timeStringVisual}, ${p.weatherStringVisual}
-`;
+        // 2. Clothing System
+        if (extension_settings.stateTracker.clothing_enabled) {
+            if (!snapshot.clothing) snapshot.clothing = { equipped: [] };
+            const clothPrompt = getClothingPrompt(snapshot, charName, avatar);
+            if (clothPrompt) clothStr = clothPrompt + "\n";
         }
         
+        // 3. Biological Functions
+        if (extension_settings.stateTracker.biology_config?.enabled) {
+            if (!snapshot.biology) snapshot.biology = { hunger: 0, thirst: 0, fatigue: 0, hygiene: 100, bladder: 0, bowels: 0, is_pregnant: false, pregnancy_days: 0 };
+            const bioPrompt = getBiologyPrompt(snapshot);
+            if (bioPrompt) bioStr = bioPrompt + "\n";
+        }
+
+        // 4. Contextual State (Groups)
         if (snapshot.groups) {
             snapshot.groups.forEach(snapGroup => {
                 const liveGroup = liveData.groups.find(g => g.name === snapGroup.name);
@@ -45,57 +70,30 @@ export async function buildTinyPrompt(mesId, snapshot) {
                     keys.forEach(key => { 
                         const val = snapGroup.variables[key];
                         const resolvedKey = key.replace(/\{\{char\}\}/gi, charName).replace(/\{\{user\}\}/gi, userName);
-                        
                         let rawInst = null;
                         if (liveGroup && liveGroup.instructions && liveGroup.instructions[key]) {
                             rawInst = liveGroup.instructions[key];
                         } else if (snapGroup.instructions && snapGroup.instructions[key]) {
                             rawInst = snapGroup.instructions[key];
                         }
-                        
                         let instructionStr = rawInst ? ` (C: ${rawInst})` : '';
                         groupVars.push(`${resolvedKey}: ${val}${instructionStr}`);
                     });
-                    cleanFormatted += `[${snapGroup.name || 'Vars'}]: ` + groupVars.join(' | ') + "\\n";
+                    groupStr += `[${snapGroup.name || 'Vars'}]: ` + groupVars.join(' | ') + "\n";
                 }
             });
         }
-        
-        if (extension_settings.stateTracker.clothing_enabled) {
-            if (!snapshot.clothing) snapshot.clothing = { equipped: [] };
-            const clothPrompt = getClothingPrompt(snapshot, charName, avatar);
-            if (clothPrompt) cleanFormatted += clothPrompt;
-        }
-        
-        if (extension_settings.stateTracker.biology_config?.enabled) {
-            if (!snapshot.biology) snapshot.biology = { hunger: 0, thirst: 0, fatigue: 0, hygiene: 100, bladder: 0, bowels: 0, is_pregnant: false, pregnancy_days: 0 };
-            const bioPrompt = getBiologyPrompt(snapshot);
-            if (bioPrompt) cleanFormatted += bioPrompt;
-        }
     }
     
-    const ctxCount = tinyCfg.ctxCount || 1;
-    const targetMesId = parseInt(mesId);
-    let chatHist = "";
-    for (let i = targetMesId - ctxCount + 1; i <= targetMesId; i++) {
-        if (i < 0) continue;
-        const m = context.chat[i];
-        if (m) {
-            const name = m.is_user ? (context.name1 || 'User') : (context.characters[context.characterId]?.name || 'Char');
-            chatHist += `[${name}]: ${m.mes}
-
-`;
-        }
+    let stateBlock = "";
+    if (clothStr || bioStr || groupStr) {
+        stateBlock = `${hState}\n${clothStr}${bioStr}${groupStr}\n`;
     }
     
-    const currentState = `${hState}
-${cleanFormatted}
-`;
-    
+    // 5. Instructions (Rules)
     let extraSchema = "";
     if (extension_settings.stateTracker.clothing_enabled) extraSchema += ' "clothing_events": ["[EQUIP: item_id]"],';
     if (extension_settings.stateTracker.biology_config?.enabled) extraSchema += ' "biology_events": ["ate_food"],';
-    
     
     let finalTask = hTask;
     if (extension_settings.stateTracker.clothing_enabled) {
@@ -124,11 +122,11 @@ ${cleanFormatted}
         finalTask = finalTask.replace('{{rule_groups}}\n', '').replace('{{rule_groups}}', '');
     }
 
+    // 6. JSON Schema Expected
     const schemaInstructions = `${finalTask} {"StateTracker": {${extraSchema} "variable_name": "new_value"}}`;
 
-    
-    const prompt = currentState + `${hChat}
-` + chatHist + schemaInstructions;
+    // Final Prompt Assembly matching the requested order
+    const prompt = chatHist + "\n" + stateBlock + schemaInstructions;
     return prompt;
 }
 
