@@ -53,3 +53,22 @@ La joya de la corona en eficiencia. En lugar de usar tu LLM Principal (caro y pe
 ## Notas de Desarrollo
 - La extensión utiliza un sistema de inyección Reactivo por Placeholders (`{{rule_clothing}}`, `{{rule_biology}}`) para estructurar los prompts. Si deshabilitas un sistema (ej. el clima), la extensión purga activamente las reglas de ese sistema del prompt antes de tocar la API, garantizando **0 desperdicio de tokens**.
 - Diseñada con resistencia a alucinaciones. El código intercepta respuestas redundantes y fuerza al modelo a usar deltas para mayor seguridad del estado.
+
+---
+
+## Sistema Nativo de Etiquetas (Main LLM)
+
+Si decides no usar el motor **Tiny LLM** en segundo plano, o si prefieres que tu **LLM Principal** interactúe de forma explícita y visible con el entorno, State Tracker incluye un motor de expresiones regulares (RegEx) incrustado en el parser del chat. El modelo principal puede modificar el estado subyacente de la partida simplemente escupiendo estas etiquetas estructurales estrictamente al **final de su respuesta**:
+
+### 1. Etiquetas de Ropa (Wardrobe)
+Modifican el inventario de vestimenta resolviendo automáticamente colisiones corporales (Slots).
+- **Equipar:** `[EQUIP: item_id]`
+- **Desequipar:** `[UNEQUIP: item_id]`
+- **Cambiar Conjunto Completo:** `[OUTFIT: outfit_id]`
+*Nota del Sistema inyectada al LLM:* `To interact with clothing, strictly output tags at the end of your response. To put on an item: [EQUIP: item_id]. To take off an item: [UNEQUIP: item_id]. To change to an outfit: [OUTFIT: outfit_id]. These tags modify the inventory state seamlessly.`
+
+### 2. Etiquetas de Actualización de Estado (Custom Variables)
+Actualiza variables personalizadas (Grupos) sin usar JSON (formato heredado/ligero).
+- **Sintaxis Pipeline:** `[UPDATE_STATE: key_name=value | another_key=value2]`
+*Ejemplo:* `[UPDATE_STATE: location_room=Kitchen | nearby_npcs=none]`
+*Nota del Sistema inyectada al LLM:* `To update any variable when the scene, time, clothes, positions, money, or state changes, you MUST append a tag at the very end of your response: [UPDATE_STATE: key_name=value | another_key=value2]. Update only the keys that changed. Unchanged keys preserve their values.`
