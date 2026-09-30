@@ -613,6 +613,12 @@ export async function showQuickStatePopup() {
         const confirm = await Popup.show.confirm("Load Preset Template", `This will OVERWRITE the current character variables with the layout of the preset "${name}". Proceed?`);
         if (confirm) {
             data.groups = JSON.parse(JSON.stringify(extension_settings.stateTracker.presets[name]));
+            // Persistir también como plantilla base del personaje para que la
+            // configuración sobreviva a nuevos chats e inicializaciones, y no
+            // reaparezca el layout predeterminado tras revertir un mensaje.
+            if (extension_settings.stateTracker.characters[avatar]) {
+                extension_settings.stateTracker.characters[avatar].groups = JSON.parse(JSON.stringify(extension_settings.stateTracker.presets[name]));
+            }
             saveAndUpdateHUD();
             refreshAccordion();
             toastr.success(`Preset "${name}" loaded!`);
@@ -656,6 +662,10 @@ export async function showQuickStatePopup() {
         const confirm = await Popup.show.confirm("Clone Variables", `This will OVERWRITE all variables and groups of this card with the setup of "${charLabel}". Proceed?`);
         if (confirm) {
             data.groups = JSON.parse(JSON.stringify(targetData.groups));
+            // Persistir también como plantilla base del personaje actual.
+            if (extension_settings.stateTracker.characters[avatar]) {
+                extension_settings.stateTracker.characters[avatar].groups = JSON.parse(JSON.stringify(targetData.groups));
+            }
             saveAndUpdateHUD();
             refreshAccordion();
             toastr.success(`Successfully cloned variables from "${charLabel}"!`);

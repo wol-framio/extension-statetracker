@@ -252,11 +252,16 @@ export async function applyTinyUpdates(updates, mesId, snapshot) {
         
         const searchKey = cleanKey.replace(/\s+/g, '_');
         
-        if (snapshot.groups) {
+        // Coincidencia EXACTA contra la key normalizada. Antes había un typo:
+        // `searchKey.includes(searchKey)` era SIEMPRE true, así que una sola
+        // actualización del Tiny LLM sobrescribía TODAS las variables de estado
+        // con el mismo valor (corrupción total, p. ej. "saturday" en todas).
+        const matchesKey = (vKey) => vKey.trim().toLowerCase().replace(/\s+/g, '_') === searchKey;
+
+        if (snapshot && snapshot.groups) {
             for (let g of snapshot.groups) {
                 for (let vKey in g.variables) {
-                    const normKey = vKey.trim().toLowerCase().replace(/\s+/g, '_');
-                    if (normKey.includes(searchKey) || searchKey.includes(searchKey)) {
+                    if (matchesKey(vKey)) {
                         g.variables[vKey] = val;
                     }
                 }
@@ -266,8 +271,7 @@ export async function applyTinyUpdates(updates, mesId, snapshot) {
         if (parseInt(mesId) === context.chat.length - 1 && data && data.groups) {
             for (let g of data.groups) {
                 for (let vKey in g.variables) {
-                    const normKey = vKey.trim().toLowerCase().replace(/\s+/g, '_');
-                    if (normKey.includes(searchKey) || searchKey.includes(searchKey)) {
+                    if (matchesKey(vKey)) {
                         g.variables[vKey] = val;
                         changesMade++;
                     }

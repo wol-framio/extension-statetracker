@@ -13,6 +13,11 @@ export function buildStatePrompt() {
     const charName = context.characterId !== undefined ? context.characters[context.characterId].name : 'Jane';
     const userName = context.userName || 'Yasuo';
 
+    // Si el Tiny LLM está habilitado, él es quien genera las actualizaciones de
+    // estado (JSON, eventos de ropa y biología). El Main LLM solo debe leer el
+    // estado, no recibir las instrucciones que conciernen únicamente al Tiny LLM.
+    const tinyLLMEnabled = !!(extension_settings.stateTracker.tinyLLM && extension_settings.stateTracker.tinyLLM.enabled !== false);
+
     let prompt = `\n\n[CURRENT STATE & ENVIRONMENT VARIABLES]\n`;
     
     let timePrompt = formatTimePrompt();
@@ -42,10 +47,7 @@ export function buildStatePrompt() {
         }
     });
 
-    if (hasVars) {
-        if (extension_settings.stateTracker.tinyLLM && extension_settings.stateTracker.tinyLLM.enabled !== false) {
-            hasVars = false;
-        }
+    if (hasVars && !tinyLLMEnabled) {
         let instructions = extension_settings.stateTracker.customPrompt;
         if (!instructions || instructions.trim() === "") {
             instructions = `To update any variable when the scene, time, clothes, positions, money, or state changes, you MUST append a JSON block at the very end of your response:\n` +
@@ -63,12 +65,16 @@ export function buildStatePrompt() {
     const clothingPrompt = getClothingPrompt(data, charName, avatar);
     if (clothingPrompt) prompt += `\n${clothingPrompt}`;
     
-    // Inyectar instrucciones de etiquetas de supervivencia y ropa al final
-    const bioInst = getBiologyLLMInstructions();
-    if (bioInst) prompt += `\n${bioInst}`;
-    
-    const clothingInst = getClothingLLMInstructions();
-    if (clothingInst) prompt += `\n${clothingInst}\n`;
+    // Inyectar instrucciones de etiquetas de supervivencia y ropa al final.
+    // En modo Tiny LLM, las actualizaciones de ropa/biología las genera el Tiny
+    // LLM (clothing_events / biology_events), así que el Main LLM no debe emitirlas.
+    if (!tinyLLMEnabled) {
+        const bioInst = getBiologyLLMInstructions();
+        if (bioInst) prompt += `\n${bioInst}`;
+        
+        const clothingInst = getClothingLLMInstructions();
+        if (clothingInst) prompt += `\n${clothingInst}\n`;
+    }
     
     if (!hasVars && !hasTime && !bioPrompt && !clothingPrompt) return '';
     
