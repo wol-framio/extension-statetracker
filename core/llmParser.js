@@ -4,6 +4,7 @@ import { snapshotStateToMessage } from './persistenceManager.js';
 import { formatTimePrompt, advanceTime } from './timeEngine.js';
 import { getBiologyPrompt, getBiologyLLMInstructions, processBiologyEvents } from './biologyEngine.js';
 import { getClothingPrompt, getClothingLLMInstructions, processClothingEvents } from './clothingEngine.js';
+import { executeTinyLLM } from './tinyLLMEngine.js';
 
 export function buildStatePrompt() {
     const data = getCharacterData();
@@ -174,7 +175,9 @@ export async function onMessageReceived(messageId) {
     
     
     // Check if Tiny LLM Auto-Update is enabled
-    if (extension_settings.stateTracker.tinyLLM && extension_settings.stateTracker.tinyLLM.autoUpdate) {
+    if (extension_settings.stateTracker.tinyLLM
+        && extension_settings.stateTracker.tinyLLM.enabled !== false
+        && extension_settings.stateTracker.tinyLLM.autoUpdate) {
         // Run Tiny LLM asynchronously without blocking chat
         setTimeout(async () => {
             try {
